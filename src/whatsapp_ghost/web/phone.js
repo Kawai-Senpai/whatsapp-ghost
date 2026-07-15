@@ -36,7 +36,9 @@ function messageText(m){
   if(['image','video','audio','document','sticker'].includes(t)){
     const media = p[t] || {};
     const label = {image:'Photo',video:'Video',audio:'Audio',document:'Document',sticker:'Sticker'}[t];
-    return {kind:'media', mtype:t, src:(media.link||''), caption:(media.caption||media.filename||''), label};
+    const stored = media.id && state.config.access_token
+      ? `/_sandbox/media/${encodeURIComponent(media.id)}?access_token=${encodeURIComponent(state.config.access_token)}` : '';
+    return {kind:'media', mtype:t, src:(media.link||stored), caption:(media.caption||media.filename||''), label};
   }
   return {kind:'text', text:'['+t+']'};
 }
@@ -184,14 +186,19 @@ $('#send-form').addEventListener('submit', async e=>{
   try{ await sendInbound({type:'text', text}); }catch(x){ alert(x.message); }
 });
 
-/* ---- attach an image (stored as a data URL link) ---- */
+/* ---- attach an image through the same media-ID flow as Cloud API ---- */
 $('#file-input').addEventListener('change', async e=>{
   const file = e.target.files[0]; e.target.value='';
   if(!file) return;
-  if(file.size > 1_500_000){ alert('Please pick an image under ~1.5 MB for the local sandbox.'); return; }
-  const dataUrl = await new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(r.result); r.onerror=rej; r.readAsDataURL(file); });
+  if(file.size > 5_000_000){ alert('Please pick an image under 5 MB.'); return; }
   const caption = $('#msg-input').value.trim(); $('#msg-input').value='';
-  try{ await sendInbound({type:'image', image:{link:dataUrl, caption, filename:file.name}}); }
+  try{
+    const form = new FormData(); form.append('messaging_product','whatsapp'); form.append('file',file,file.name);
+    const auth = {Authorization:'Bearer '+state.config.access_token};
+    const uploaded = await req(`/v25.0/${encodeURIComponent(state.activePhone)}/media`,{method:'POST',headers:auth,body:form});
+    const metadata = await req(`/v25.0/${encodeURIComponent(uploaded.id)}`,{headers:auth});
+    await sendInbound({type:'image', image:{id:uploaded.id,mime_type:metadata.mime_type,sha256:metadata.sha256,caption}});
+  }
   catch(x){ alert(x.message); }
 });
 

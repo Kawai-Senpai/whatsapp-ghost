@@ -22,7 +22,12 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = ["pytest>=8.3,<9", "pytest-asyncio>=0.24,<1"]
+dev = [
+  "playwright>=1.55,<2",
+  "pytest>=8.3,<9",
+  "pytest-asyncio>=0.24,<1",
+  "pytest-cov>=6,<8",
+]
 
 [project.scripts]
 waba = "whatsapp_ghost.cli:app"

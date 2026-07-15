@@ -57,6 +57,26 @@ def test_template_media_auth_and_clock(tmp_path: Path) -> None:
         assert metadata["sha256"] == hashlib.sha256(b"hello").hexdigest()
         assert client.get(f"/_sandbox/media/{media_id}").status_code == 401
         assert client.get(f"/_sandbox/media/{media_id}", headers=headers).content == b"hello"
+        assert client.get(f"/_sandbox/media/{media_id}", params={"access_token": "token"}).content == b"hello"
+
+        image_bytes = b"\x89PNG\r\n\x1a\nlocal-image"
+        image_upload = client.post(
+            "/v25.0/PHONE_LOCAL/media",
+            headers=headers,
+            data={"messaging_product": "whatsapp"},
+            files={"file": ("photo.png", image_bytes, "image/png")},
+        )
+        assert image_upload.status_code == 200
+        image_id = image_upload.json()["id"]
+        assert (tmp_path / "media" / image_id).read_bytes() == image_bytes
+        image_meta = client.get(f"/v25.0/{image_id}", headers=headers).json()
+        inbound_image = client.post("/_sandbox/phones/15550002001/messages", json={
+            "type": "image",
+            "phone_number_id": "PHONE_LOCAL",
+            "image": {"id": image_id, "mime_type": image_meta["mime_type"], "sha256": image_meta["sha256"], "caption": "Receipt"},
+        })
+        assert inbound_image.status_code == 201
+        assert inbound_image.json()["image"]["id"] == image_id
 
         advanced = client.post("/_sandbox/clock", json={"action": "advance", "value": "25h"}).json()
         assert advanced["frozen"] is True

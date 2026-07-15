@@ -67,7 +67,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/_sandbox/config")
     def public_config() -> dict[str, Any]:
-        return {"base_url": settings.base_url, "mode": settings.mode, "access_token": settings.access_token, "demo": {"business_id": "BUSINESS_LOCAL", "waba_id": "WABA_LOCAL", "phone_number_id": "PHONE_LOCAL", "business_phone": "15550001000", "customer": "15550002001"}}
+        return {
+            "base_url": settings.base_url,
+            "mode": settings.mode,
+            "access_token": settings.access_token,
+            "media_dir": str(settings.media_dir),
+            "demo": {"business_id": "BUSINESS_LOCAL", "waba_id": "WABA_LOCAL", "phone_number_id": "PHONE_LOCAL", "business_phone": "15550001000", "customer": "15550002001"},
+        }
 
     @app.get("/", include_in_schema=False)
     def home():
@@ -446,8 +452,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"id": media_id}
 
     @app.get("/_sandbox/media/{media_id}")
-    def download_media(media_id: str, authorization: str | None = Header(default=None)):
-        if authorization != f"Bearer {settings.access_token}":
+    def download_media(
+        media_id: str,
+        authorization: str | None = Header(default=None),
+        access_token: str | None = Query(default=None),
+    ):
+        if authorization != f"Bearer {settings.access_token}" and access_token != settings.access_token:
             return graph_error(190, "A valid access token is required.", status_code=401)
         row = store.one("SELECT * FROM media WHERE id=?", (media_id,))
         if not row:
