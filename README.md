@@ -26,6 +26,29 @@ https://graph.facebook.com  →  http://127.0.0.1:8787
 > [!IMPORTANT]
 > WhatsApp Ghost is an independent development tool. It is not WhatsApp, does not connect to WhatsApp users, and does not implement Meta's private protocols.
 
+## 🖼️ Screenshots
+
+Explore the local developer console and simulated WhatsApp conversations:
+
+<table>
+<tr>
+<td width="50%"><a href="assets/screenshots/Screenshot%202026-07-15%20at%2019-57-03%20WhatsApp%20Ghost%20%C2%B7%20Developer%20Console.png"><img src="assets/screenshots/Screenshot%202026-07-15%20at%2019-57-03%20WhatsApp%20Ghost%20%C2%B7%20Developer%20Console.png" alt="WhatsApp Ghost developer console overview" width="100%"></a><br><sub>Developer console overview</sub></td>
+<td width="50%"><a href="assets/screenshots/Screenshot%202026-07-15%20at%2019-57-21%20WhatsApp%20Ghost%20%C2%B7%20Developer%20Console.png"><img src="assets/screenshots/Screenshot%202026-07-15%20at%2019-57-21%20WhatsApp%20Ghost%20%C2%B7%20Developer%20Console.png" alt="WhatsApp Ghost developer console" width="100%"></a><br><sub>Console configuration</sub></td>
+</tr>
+<tr>
+<td><a href="assets/screenshots/Screenshot%202026-07-15%20at%2019-57-30%20WhatsApp%20Ghost%20%C2%B7%20Developer%20Console.png"><img src="assets/screenshots/Screenshot%202026-07-15%20at%2019-57-30%20WhatsApp%20Ghost%20%C2%B7%20Developer%20Console.png" alt="WhatsApp Ghost console tools" width="100%"></a><br><sub>Console tools</sub></td>
+<td><a href="assets/screenshots/Screenshot%202026-07-15%20at%2019-57-39%20WhatsApp%20Ghost%20%C2%B7%20Developer%20Console.png"><img src="assets/screenshots/Screenshot%202026-07-15%20at%2019-57-39%20WhatsApp%20Ghost%20%C2%B7%20Developer%20Console.png" alt="WhatsApp Ghost developer console details" width="100%"></a><br><sub>Developer console details</sub></td>
+</tr>
+<tr>
+<td><a href="assets/screenshots/Screenshot%202026-07-15%20at%2019-57-53%20WhatsApp%20Ghost%20%C2%B7%20Developer%20Console.png"><img src="assets/screenshots/Screenshot%202026-07-15%20at%2019-57-53%20WhatsApp%20Ghost%20%C2%B7%20Developer%20Console.png" alt="WhatsApp Ghost developer console workflow" width="100%"></a><br><sub>Console workflow</sub></td>
+<td><a href="assets/screenshots/Screenshot%202026-07-15%20at%2019-59-10%20WhatsApp%20%C2%B7%20Bob.png"><img src="assets/screenshots/Screenshot%202026-07-15%20at%2019-59-10%20WhatsApp%20%C2%B7%20Bob.png" alt="WhatsApp simulated conversation with Bob" width="100%"></a><br><sub>Simulated conversation with Bob</sub></td>
+</tr>
+<tr>
+<td><a href="assets/screenshots/Screenshot%202026-07-15%20at%2019-59-25%20WhatsApp%20%C2%B7%20Demo%20Customer.png"><img src="assets/screenshots/Screenshot%202026-07-15%20at%2019-59-25%20WhatsApp%20%C2%B7%20Demo%20Customer.png" alt="WhatsApp simulated demo customer conversation" width="100%"></a><br><sub>Demo customer conversation</sub></td>
+<td></td>
+</tr>
+</table>
+
 ## ✨ What you get
 
 | | Capability | What it lets you test |
