@@ -234,6 +234,13 @@ uv run ghost.py phone spawn 15550002002
 
 Each inbound message resets only that customer/business-phone pair's window. One simulated customer can independently chat with every configured business: choose a business in the dedicated `/phone` tab, and the first message creates that conversation, emits the correct WABA webhook, and opens its 24-hour window. `spawn` opens another terminal on Windows; `open` runs in the current terminal.
 
+The Textual client also loads every configured sender. Use the contact list to switch businesses, or open a specific sender directly:
+
+```powershell
+uv run ghost.py phone open 15550002001 --business PHONE_LOCAL
+uv run ghost.py phone spawn 15550002002 --business PHONE_SALES
+```
+
 <a id="configuration"></a>
 
 ## ⚙️ Modes and configuration
@@ -272,7 +279,11 @@ The first release does not yet implement Flows execution, commerce/catalogs, pay
 
 ```powershell
 uv sync
-uv run pytest
+uv run playwright install chromium
+uv run pytest -q
+uv run pytest --cov=whatsapp_ghost --cov-report=term-missing
 ```
 
-SQLite uses WAL mode. Original message payloads, status events, media metadata, and raw signed webhook bodies persist under `.whatsapp-ghost/`.
+The suite is split by behavior: resources/authentication, messages and 24-hour windows, media persistence/ownership, templates, webhooks and real callback delivery, restart/reset persistence, CLI, browser UI, and Textual UI. Browser tests start an actual Uvicorn process and drive Chromium through the console and phone—including image attachment, filesystem persistence, message ordering, ticks, and sender switching.
+
+SQLite uses WAL mode. Original message payloads, status events, media metadata, and raw signed webhook bodies persist under `.whatsapp-ghost/`. Browser phone attachments use the same upload → media ID → message-reference flow as the API; they are stored in `.whatsapp-ghost/media/`, never embedded as transient data URLs.

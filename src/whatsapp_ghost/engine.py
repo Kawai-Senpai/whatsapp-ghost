@@ -74,8 +74,10 @@ class Engine:
             media = body.get(message_type, {})
             if not media.get("id") and not media.get("link"):
                 return 131008, f"Parameter {message_type}.id or {message_type}.link is required."
-            if media.get("id") and not self.store.one("SELECT id FROM media WHERE id=?", (media["id"],)):
-                return 131052, "The referenced media ID does not exist."
+            if media.get("id"):
+                stored_media = self.store.one("SELECT phone_number_id FROM media WHERE id=?", (media["id"],))
+                if not stored_media or stored_media["phone_number_id"] != phone_id:
+                    return 131052, "The referenced media ID does not exist for this phone number."
         conversation = self.store.one("SELECT service_window_expires_at FROM conversations WHERE phone_number_id=? AND user_wa_id=?", (phone_id, to))
         window_open = bool(conversation and conversation["service_window_expires_at"] and self.store.now().isoformat() < conversation["service_window_expires_at"])
         if message_type != "template" and not window_open and self.settings.mode != "loose":
@@ -83,7 +85,11 @@ class Engine:
         if message_type == "template":
             template = body.get("template", {})
             language = template.get("language", {}).get("code")
-            row = self.store.one("SELECT * FROM templates WHERE name=? AND language=?", (template.get("name"), language))
+            phone = self.phone(phone_id)
+            row = self.store.one(
+                "SELECT * FROM templates WHERE waba_id=? AND name=? AND language=?",
+                (phone["waba_id"], template.get("name"), language),
+            )
             if not row:
                 return 132001, "Template name or language does not exist."
             if row["status"] == "PAUSED":

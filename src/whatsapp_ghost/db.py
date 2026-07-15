@@ -91,7 +91,7 @@ class Store:
         finally:
             connection.close()
 
-    def initialize(self) -> None:
+    def initialize(self, access_token: str = "local-dev-token", app_secret: str = "local-app-secret") -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as db:
             db.executescript(SCHEMA)
@@ -106,7 +106,7 @@ class Store:
             db.execute("INSERT OR IGNORE INTO business_accounts VALUES(?,?,?,?)", ("WABA_LOCAL", "BUSINESS_LOCAL", "Ghost Demo Business", now))
             db.execute(
                 "INSERT OR IGNORE INTO developer_apps VALUES(?,?,?,?,?)",
-                ("APP_LOCAL", "Ghost Demo App", "local-app-secret", "local-dev-token", now),
+                ("APP_LOCAL", "Ghost Demo App", app_secret, access_token, now),
             )
             db.execute(
                 "INSERT OR IGNORE INTO phone_numbers(id,waba_id,display_phone_number,verified_name,created_at) VALUES(?,?,?,?,?)",

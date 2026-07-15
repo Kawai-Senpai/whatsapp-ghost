@@ -59,9 +59,11 @@ def start(host: str = "127.0.0.1", port: int = 8787, reload: bool = False, mode:
     import uvicorn
     if mode:
         os.environ["WABA_MODE"] = mode
-    console.print(f"[green]WhatsApp Ghost[/] → http://{host}:{port}")
-    console.print("Console → [link=http://127.0.0.1:8787/console]http://127.0.0.1:8787/console[/]")
-    console.print("Docs → [link=http://127.0.0.1:8787/docs]http://127.0.0.1:8787/docs[/]")
+    origin = f"http://{host}:{port}"
+    console.print(f"[green]WhatsApp Ghost[/] → {origin}")
+    console.print(f"Console → [link={origin}/console]{origin}/console[/]")
+    console.print(f"Guide → [link={origin}/guide]{origin}/guide[/]")
+    console.print(f"Docs → [link={origin}/docs]{origin}/docs[/]")
     uvicorn.run("whatsapp_ghost.api:app", host=host, port=port, reload=reload)
 
 
@@ -133,22 +135,30 @@ def phone_create(wa_id: str, name: str = "Local Customer") -> None:
 
 
 @phone_app.command("open")
-def phone_open(wa_id: str = "15550002001") -> None:
+def phone_open(
+    wa_id: Annotated[str, typer.Argument(help="Simulated customer phone number.")] = "15550002001",
+    business: Annotated[str | None, typer.Option("--business", "-b", help="Open a specific phone-number ID.")] = None,
+) -> None:
     """Open a Textual WhatsApp-like client for one simulated number."""
     from .tui import PhoneApp
     settings = Settings.from_env()
-    PhoneApp(wa_id, settings.base_url, settings.access_token, settings.notify).run()
+    PhoneApp(wa_id, settings.base_url, settings.access_token, settings.notify, business).run()
 
 
 @phone_app.command("spawn")
-def phone_spawn(wa_id: str = "15550002001") -> None:
+def phone_spawn(
+    wa_id: Annotated[str, typer.Argument(help="Simulated customer phone number.")] = "15550002001",
+    business: Annotated[str | None, typer.Option("--business", "-b", help="Open a specific phone-number ID.")] = None,
+) -> None:
     """Open a simulated phone in a separate Windows terminal."""
     command = [sys.executable, "-m", "whatsapp_ghost.cli", "phone", "open", wa_id]
+    if business:
+        command.extend(["--business", business])
     if sys.platform == "win32":
         subprocess.Popen(["cmd", "/c", "start", "WhatsApp Ghost", *command])
     else:
         console.print("Automatic terminal spawning is platform-specific; opening in this terminal.")
-        phone_open(wa_id)
+        phone_open(wa_id, business)
 
 
 @webhook_app.command("list")

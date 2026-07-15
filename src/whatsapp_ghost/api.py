@@ -36,7 +36,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(_: FastAPI):
         settings.data_dir.mkdir(parents=True, exist_ok=True)
         settings.media_dir.mkdir(parents=True, exist_ok=True)
-        store.initialize()
+        store.initialize(settings.access_token, settings.app_secret)
         yield
 
     app = FastAPI(
@@ -50,14 +50,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.engine = engine
     app.mount("/static", StaticFiles(directory=str(WEB_DIR)), name="static")
 
+    def valid_access_token(token: str) -> bool:
+        return token == settings.access_token or bool(store.one("SELECT id FROM developer_apps WHERE access_token=?", (token,)))
+
     @app.middleware("http")
     async def authentication(request: Request, call_next):
         if request.url.path == "/" or request.url.path.startswith(("/_sandbox", "/webhook", "/console", "/guide", "/phone", "/static", "/docs", "/openapi.json", "/redoc")):
             return await call_next(request)
         authorization = request.headers.get("authorization", "")
         token = authorization.removeprefix("Bearer ").strip()
-        known_token = token == settings.access_token or bool(store.one("SELECT id FROM developer_apps WHERE access_token=?", (token,)))
-        if not known_token:
+        if not valid_access_token(token):
             return graph_error(190, "The access token is invalid or missing.", status_code=401)
         return await call_next(request)
 
@@ -185,7 +187,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if settings.media_dir.exists():
             shutil.rmtree(settings.media_dir)
         settings.media_dir.mkdir(parents=True)
-        store.initialize()
+        store.initialize(settings.access_token, settings.app_secret)
         return {"success": True}
 
     @app.get("/_sandbox/clock")
@@ -196,15 +198,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/_sandbox/clock")
     def clock_set(body: dict[str, Any] = Body(...)):
         action = body.get("action")
-        if action == "reset":
-            store.execute("UPDATE clock_state SET frozen_at=NULL WHERE singleton=1")
-        elif action == "set":
-            store.execute("UPDATE clock_state SET frozen_at=? WHERE singleton=1", (parse_datetime(body["value"]).isoformat(),))
-        elif action == "advance":
-            value = (store.now() + parse_duration(body["value"])).astimezone(timezone.utc)
-            store.execute("UPDATE clock_state SET frozen_at=? WHERE singleton=1", (value.isoformat(),))
-        else:
-            return JSONResponse({"error": "action must be set, advance, or reset"}, status_code=400)
+        try:
+            if action == "reset":
+                store.execute("UPDATE clock_state SET frozen_at=NULL WHERE singleton=1")
+            elif action == "set":
+                store.execute("UPDATE clock_state SET frozen_at=? WHERE singleton=1", (parse_datetime(body["value"]).isoformat(),))
+            elif action == "advance":
+                value = (store.now() + parse_duration(body["value"])).astimezone(timezone.utc)
+                store.execute("UPDATE clock_state SET frozen_at=? WHERE singleton=1", (value.isoformat(),))
+            else:
+                return JSONResponse({"error": "action must be set, advance, or reset"}, status_code=400)
+        except (KeyError, TypeError, ValueError) as exc:
+            return JSONResponse({"error": str(exc) or "A valid clock value is required"}, status_code=400)
         return clock_get()
 
     @app.get("/_sandbox/phones")
@@ -250,8 +255,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             payload = supplied_payload
         else:
             payload = {"body": ""} if message_type == "text" else {}
+        phone_number_id = body.get("phone_number_id", "PHONE_LOCAL")
+        if message_type in {"image", "audio", "video", "document", "sticker"} and payload.get("id"):
+            media = store.one("SELECT phone_number_id FROM media WHERE id=?", (payload["id"],))
+            if not media or media["phone_number_id"] != phone_number_id:
+                return JSONResponse({"error": "The referenced media ID does not exist for this phone number"}, status_code=400)
         try:
-            return await engine.receive_inbound(body.get("phone_number_id", "PHONE_LOCAL"), wa_id, message_type, payload)
+            return await engine.receive_inbound(phone_number_id, wa_id, message_type, payload)
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=404)
 
@@ -322,6 +332,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def sandbox_status(message_id: str, body: dict[str, Any] = Body(...)):
         if not store.one("SELECT id FROM messages WHERE id=?", (message_id,)):
             return JSONResponse({"error": "message not found"}, status_code=404)
+        if body.get("status") not in {"accepted", "sent", "delivered", "read", "failed"}:
+            return JSONResponse({"error": "status must be accepted, sent, delivered, read, or failed"}, status_code=400)
         await engine.set_status(message_id, body["status"])
         return {"success": True}
 
@@ -412,6 +424,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/{version}/{phone_id}/messages")
     async def send_message(version: str, phone_id: str, body: dict[str, Any] = Body(...)):
         if body.get("status") == "read":
+            if body.get("messaging_product") != "whatsapp":
+                return graph_error(131009, "messaging_product must be whatsapp.")
             message = store.one("SELECT * FROM messages WHERE id=? AND direction='inbound' AND recipient_id=?", (body.get("message_id"), phone_id))
             if not message:
                 return graph_error(131009, "The message ID is invalid or does not belong to this phone number.")
@@ -457,7 +471,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         authorization: str | None = Header(default=None),
         access_token: str | None = Query(default=None),
     ):
-        if authorization != f"Bearer {settings.access_token}" and access_token != settings.access_token:
+        header_token = (authorization or "").removeprefix("Bearer ").strip()
+        if not valid_access_token(header_token) and not valid_access_token(access_token or ""):
             return graph_error(190, "A valid access token is required.", status_code=401)
         row = store.one("SELECT * FROM media WHERE id=?", (media_id,))
         if not row:
@@ -478,6 +493,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/{version}/{waba_id}/message_templates")
     def create_template(version: str, waba_id: str, body: dict[str, Any] = Body(...)):
+        if not store.one("SELECT id FROM business_accounts WHERE id=?", (waba_id,)):
+            return graph_error(100, "WhatsApp Business Account does not exist.", status_code=404)
         for field in ("name", "language", "category", "components"):
             if field not in body:
                 return graph_error(131008, f"Parameter {field} is required.")
@@ -506,6 +523,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         body: dict[str, Any] = Body(default_factory=dict),
         authorization: str | None = Header(default=None),
     ):
+        if not store.one("SELECT id FROM business_accounts WHERE id=?", (waba_id,)):
+            return graph_error(100, "WhatsApp Business Account does not exist.", status_code=404)
         callback = body.get("override_callback_uri") or body.get("callback_url")
         if not callback:
             return graph_error(131008, "For the local simulator, callback_url or override_callback_uri is required.")
@@ -543,6 +562,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/{version}/{phone_id}/whatsapp_business_profile")
     def business_profile_update(version: str, phone_id: str, body: dict[str, Any] = Body(...)):
+        if not engine.phone(phone_id):
+            return graph_error(100, "Phone number ID does not exist.", status_code=404)
         if body.get("messaging_product") != "whatsapp":
             return graph_error(131009, "messaging_product must be whatsapp.")
         profile = {key: value for key, value in body.items() if key != "messaging_product"}
