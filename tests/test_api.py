@@ -24,10 +24,12 @@ def test_strict_service_window_message_lifecycle_and_webhook(tmp_path: Path) -> 
         assert rejected.status_code == 400
         assert rejected.json()["error"]["code"] == 131047
 
-        incoming = client.post("/_sandbox/phones/15550002001/messages", json={"type": "text", "text": "Hi"})
-        assert incoming.status_code == 201
-        assert incoming.json()["type"] == "text"
-        assert incoming.json()["text"]["body"] == "Hi"
+        with client.websocket_connect("/_sandbox/clients/15550002001") as phone_socket:
+            incoming = client.post("/_sandbox/phones/15550002001/messages", json={"type": "text", "text": "Hi"})
+            assert incoming.status_code == 201
+            assert incoming.json()["type"] == "text"
+            assert incoming.json()["text"]["body"] == "Hi"
+            assert phone_socket.receive_json()["event"] == "message"
 
         accepted = client.post("/v25.0/PHONE_LOCAL/messages", headers=headers, json=outbound)
         assert accepted.status_code == 200
@@ -70,7 +72,10 @@ def test_auth_and_webhook_verification(tmp_path: Path) -> None:
 
         console = client.get("/console")
         assert console.status_code == 200
-        assert "Local developer cloud" in console.text
+        assert "Meta for Developers" in console.text
+        phone = client.get("/phone")
+        assert phone.status_code == 200
+        assert "WhatsApp Web" in phone.text
 
         local_app = client.post("/_sandbox/apps", json={"name": "Integration App"}).json()
         app_headers = {"Authorization": f"Bearer {local_app['access_token']}"}

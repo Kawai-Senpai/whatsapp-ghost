@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>WhatsApp Ghost · Developer Console</title>
+  <link rel="stylesheet" href="/static/console.css">
+</head>
+<body>
+  <!-- SVG icon sprite -->
+  <svg class="icon-sprite" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs>
+    <symbol id="i-home" viewBox="0 0 24 24"><path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/></symbol>
+    <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.6-2-3.4-2.4 1a7 7 0 0 0-1.7-1L16 3H8l-.8 2.6a7 7 0 0 0-1.7 1l-2.4-1-2 3.4 2 1.6a7 7 0 0 0 0 2l-2 1.6 2 3.4 2.4-1a7 7 0 0 0 1.7 1L8 21h8l.8-2.6a7 7 0 0 0 1.7-1l2.4 1 2-3.4-2-1.6a7 7 0 0 0 .1-1z"/></symbol>
+    <symbol id="i-numbers" viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="3"/><path d="M9 7h6M9 12h6M9 17h3"/></symbol>
+    <symbol id="i-key" viewBox="0 0 24 24"><circle cx="8" cy="15" r="4"/><path d="M11 12l8-8M17 6l2 2M14 9l2 2"/></symbol>
+    <symbol id="i-template" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M4 9h16M9 9v11"/></symbol>
+    <symbol id="i-webhook" viewBox="0 0 24 24"><circle cx="7" cy="18" r="2.5"/><circle cx="17" cy="18" r="2.5"/><circle cx="12" cy="6" r="2.5"/><path d="M10.7 8.1l-3.2 7.5M13.3 8.1l3.2 7.5M9.5 18h5"/></symbol>
+    <symbol id="i-phone" viewBox="0 0 24 24"><rect x="7" y="2" width="10" height="20" rx="2.5"/><path d="M11 18h2"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h8"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-edit" viewBox="0 0 24 24"><path d="M4 20h4l10-10-4-4L4 16v4z"/><path d="M13.5 6.5l4 4"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 0 0-14-4L4 9M4 13a8 8 0 0 0 14 4l2-2"/><path d="M4 5v4h4M20 19v-4h-4"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+    <symbol id="i-open" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9"/><path d="M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4"/></symbol>
+  </defs></svg>
+
+  <!-- Meta top bar -->
+  <header class="metabar">
+    <div class="logo"><span class="infinity"><svg viewBox="0 0 40 22" width="26" height="15" fill="none" stroke="#fff" stroke-width="3.4" aria-hidden="true"><path d="M6 11c0-4 2-7 5-7 4 0 6 5 9 5s5-5 9-5c3 0 5 3 5 7s-2 7-5 7c-4 0-6-5-9-5s-5 5-9 5c-3 0-5-3-5-7z"/></svg></span><b>Meta for Developers</b></div>
+    <nav>
+      <a href="#" data-page="overview">My Apps</a>
+      <a href="/docs" target="_blank">Docs</a>
+      <a href="#" data-page="resources">Tools</a>
+      <a href="#" data-page="webhooks">Support</a>
+    </nav>
+    <div class="spacer"></div>
+    <div class="search"><svg class="ico" style="width:16px;height:16px"><use href="#i-search"/></svg><input placeholder="Search" aria-label="Search"></div>
+    <div class="avatar-pill">G</div>
+  </header>
+
+  <div class="layout">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="side-app">
+        <div class="wa-mark"><svg viewBox="0 0 24 24" width="20" height="20" fill="#fff" aria-hidden="true"><path d="M12 2a10 10 0 0 0-8.5 15.3L2 22l4.8-1.5A10 10 0 1 0 12 2zm0 2a8 8 0 0 1 0 16 8 8 0 0 1-4.2-1.2l-.3-.2-2.4.7.7-2.3-.2-.4A8 8 0 0 1 12 4zm-3 4c-.3 0-.7.1-1 .5-.3.4-1 1-1 2.4s1 2.8 1.2 3c.2.2 2 3.2 5 4.4 2.5 1 3 .8 3.5.7.5 0 1.6-.6 1.8-1.3.2-.6.2-1.2.2-1.3l-.6-.4c-.4-.2-1.6-.8-1.8-.9-.3 0-.4-.1-.6.2l-.8 1c-.2.2-.3.2-.6.1-.4-.2-1.3-.5-2.4-1.5-.9-.8-1.5-1.7-1.6-2-.2-.3 0-.4.1-.6l.5-.5c.1-.2.2-.3.3-.5s0-.4 0-.5l-.9-2c-.2-.6-.4-.5-.6-.5z"/></svg></div>
+        <div>
+          <b>WhatsApp Ghost</b>
+          <small>App ID: <span id="app-id-side">local</span></small>
+        </div>
+      </div>
+
+      <button class="side-link active" data-page="overview"><svg class="ico"><use href="#i-home"/></svg> Dashboard</button>
+
+      <div class="side-section">Connect on WhatsApp</div>
+      <button class="side-link" data-page="setup"><svg class="ico"><use href="#i-gear"/></svg> Production setup</button>
+      <button class="side-link" data-page="resources"><svg class="ico"><use href="#i-numbers"/></svg> API Setup &amp; Numbers</button>
+      <button class="side-link" data-page="apps"><svg class="ico"><use href="#i-key"/></svg> Apps &amp; Tokens</button>
+      <button class="side-link" data-page="templates"><svg class="ico"><use href="#i-template"/></svg> Message Templates</button>
+      <button class="side-link" data-page="webhooks"><svg class="ico"><use href="#i-webhook"/></svg> Webhooks</button>
+
+      <div class="side-section">Test tools</div>
+      <button class="side-link" data-page="simulator"><svg class="ico"><use href="#i-phone"/></svg> Phone Simulator</button>
+
+      <div class="side-foot"><span class="dot"></span>Runs only on your machine<br><span id="base-small">127.0.0.1:8787</span> · <span id="mode-foot">STRICT</span></div>
+    </aside>
+
+    <!-- Main content -->
+    <main class="content">
+
+      <!-- OVERVIEW -->
+      <section class="page active" id="overview">
+        <div class="crumbs">Home / <b>Dashboard</b></div>
+        <div class="head">
+          <div>
+            <h1>Your local WhatsApp platform</h1>
+            <p>Build against the exact Cloud API contract — create apps, register numbers, send templates and inspect webhooks — all offline on your machine.</p>
+          </div>
+          <button class="btn" onclick="openModal('app-modal')"><svg><use href="#i-plus"/></svg>Create app</button>
+        </div>
+        <div class="grid">
+          <div class="card stat span3"><small>Developer apps</small><strong id="m-apps">—</strong></div>
+          <div class="card stat span3"><small>Business numbers</small><strong id="m-numbers">—</strong></div>
+          <div class="card stat span3"><small>Test customers</small><strong id="m-users">—</strong></div>
+          <div class="card stat span3"><small>Messages</small><strong class="accent" id="m-messages">—</strong></div>
+
+          <div class="card span7">
+            <h2>Drop-in API endpoint</h2>
+            <p class="card-sub">Keep your Cloud API path and payloads. Point at this host and use the local Bearer token.</p>
+            <div class="endpoint"><span class="verb">POST</span> <span class="host" id="endpoint">http://127.0.0.1:8787/v25.0/PHONE_LOCAL/messages</span></div>
+            <div class="actions" style="margin-top:14px">
+              <button class="btn secondary" onclick="copyText(state.config.base_url)">Copy base URL</button>
+              <a class="btn secondary" href="/docs" target="_blank">Open API docs</a>
+            </div>
+          </div>
+
+          <div class="card span5">
+            <h2>Get started</h2>
+            <div class="tasklist" style="margin-top:8px">
+              <div class="task done"><div class="check">✓</div><div class="t-main"><b>Configure webhooks</b><span>Signed HMAC deliveries ready</span></div></div>
+              <div class="task" id="task-number"><div class="check"></div><div class="t-main"><b>Register a business number</b><span>Add a sender under API Setup</span></div></div>
+              <div class="task" id="task-user"><div class="check"></div><div class="t-main"><b>Add a test customer</b><span>Open the phone simulator</span></div></div>
+              <div class="task" id="task-msg"><div class="check"></div><div class="t-main"><b>Send a message</b><span>Open the 24-hour window</span></div></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- SETUP (facebook-style checklist) -->
+      <section class="page" id="setup">
+        <div class="crumbs">Use cases / <b>Customize</b></div>
+        <div class="head"><div><h1>Production setup</h1><p>Set up one or more accounts to contact your customers through WhatsApp APIs.</p></div></div>
+        <div class="card">
+          <div class="tasklist">
+            <div class="task done"><div class="check">✓</div><div class="t-main"><b>Configure Webhooks</b><span>Ready — deliveries are signed with your app secret</span></div><button class="btn ghost small" data-page="webhooks">Manage</button></div>
+            <div class="task" id="s-number"><div class="check"></div><div class="t-main"><b>Register your WhatsApp phone number</b><span>About 1 minute</span></div><button class="btn ghost small" onclick="openModal('business-modal')">Add number</button></div>
+            <div class="task" id="s-user"><div class="check"></div><div class="t-main"><b>Add a test customer</b><span>About 1 minute</span></div><button class="btn ghost small" onclick="openModal('phone-modal')">Add customer</button></div>
+            <div class="task" id="s-msg"><div class="check"></div><div class="t-main"><b>Send message</b><span>About 2 minutes</span></div><button class="btn ghost small" data-page="simulator">Open simulator</button></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- RESOURCES / NUMBERS -->
+      <section class="page" id="resources">
+        <div class="crumbs">WhatsApp / <b>API Setup</b></div>
+        <div class="head"><div><h1>API Setup &amp; Numbers</h1><p>Manage business accounts and their registered sender numbers. Rename a business or change a display number anytime.</p></div>
+          <button class="btn" onclick="openModal('business-modal')"><svg><use href="#i-plus"/></svg>Add business</button></div>
+        <div class="list" id="business-list"></div>
+      </section>
+
+      <!-- APPS -->
+      <section class="page" id="apps">
+        <div class="crumbs">App settings / <b>Basic</b></div>
+        <div class="head"><div><h1>Apps &amp; Tokens</h1><p>Local equivalents of developer apps, app secrets and access tokens.</p></div>
+          <button class="btn" onclick="openModal('app-modal')"><svg><use href="#i-plus"/></svg>Create app</button></div>
+        <div class="list" id="app-list"></div>
+      </section>
+
+      <!-- TEMPLATES -->
+      <section class="page" id="templates">
+        <div class="crumbs">WhatsApp Manager / <b>Message Templates</b></div>
+        <div class="head"><div><h1>Message Templates</h1><p>Create approved local templates with positional variables such as {{1}}.</p></div>
+          <button class="btn" onclick="openModal('template-modal')"><svg><use href="#i-plus"/></svg>New template</button></div>
+        <div class="list" id="template-list"></div>
+      </section>
+
+      <!-- WEBHOOKS -->
+      <section class="page" id="webhooks">
+        <div class="crumbs">App settings / <b>Webhooks</b></div>
+        <div class="head"><div><h1>Webhooks</h1><p>Raw HMAC-signed events, delivery attempts, responses and replay.</p></div>
+          <button class="btn" onclick="openModal('webhook-modal')"><svg><use href="#i-plus"/></svg>Subscribe URL</button></div>
+        <div class="list" id="webhook-list"></div>
+      </section>
+
+      <!-- SIMULATOR -->
+      <section class="page" id="simulator">
+        <div class="crumbs">Test tools / <b>Phone Simulator</b></div>
+        <div class="head">
+          <div><h1>Phone Simulator</h1><p>Open a full WhatsApp Web experience in its own tab. Pick a test customer and hit “Open WhatsApp Web”.</p></div>
+        </div>
+        <div class="grid">
+          <div class="card span6">
+            <h2>Test customers</h2>
+            <p class="card-sub">Each customer is a simulated phone that can chat with your business numbers.</p>
+            <div class="list" id="user-list"></div>
+            <div class="actions" style="margin-top:14px">
+              <button class="btn wa" onclick="openModal('phone-modal')"><svg><use href="#i-plus"/></svg>Add customer</button>
+              <button class="btn secondary" onclick="advanceClock()"><svg><use href="#i-clock"/></svg>Advance 25h</button>
+            </div>
+          </div>
+          <div class="card span6">
+            <h2>Open WhatsApp Web</h2>
+            <p class="card-sub">Choose a customer and business to launch the chat simulator in a dedicated browser tab.</p>
+            <label>Test customer (you)</label>
+            <select class="field" id="sim-user"></select>
+            <label>Business to chat with</label>
+            <select class="field" id="sim-business"></select>
+            <div class="actions" style="margin-top:18px">
+              <button class="btn wa" onclick="openPhoneTab()"><svg><use href="#i-open"/></svg>Open WhatsApp Web</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+  <!-- ===== Modals ===== -->
+  <div class="modal-back" id="app-modal"><form class="modal" onsubmit="createApp(event)">
+    <div class="modal-head"><h2>Create a local API app</h2><button type="button" class="x" onclick="closeModal('app-modal')">×</button></div>
+    <div class="modal-body"><p class="card-sub">A local app gets an ID, app secret and Bearer token instantly.</p>
+      <label>App name</label><input class="field" id="app-name" required placeholder="Order notifications"></div>
+    <div class="modal-foot"><button type="button" class="btn secondary" onclick="closeModal('app-modal')">Cancel</button><button class="btn">Create app</button></div>
+  </form></div>
+
+  <div class="modal-back" id="business-modal"><form class="modal" onsubmit="createBusiness(event)">
+    <div class="modal-head"><h2>Add a business &amp; sender</h2><button type="button" class="x" onclick="closeModal('business-modal')">×</button></div>
+    <div class="modal-body">
+      <div class="form-row"><div><label>Business name</label><input class="field" id="biz-name" required placeholder="Acme Support"></div>
+      <div><label>Verified display name</label><input class="field" id="biz-verified" placeholder="Acme"></div></div>
+      <label>Business phone number</label><input class="field" id="biz-phone" required placeholder="15550003000">
+    </div>
+    <div class="modal-foot"><button type="button" class="btn secondary" onclick="closeModal('business-modal')">Cancel</button><button class="btn">Create resources</button></div>
+  </form></div>
+
+  <div class="modal-back" id="edit-business-modal"><form class="modal" onsubmit="saveBusiness(event)">
+    <div class="modal-head"><h2>Edit business</h2><button type="button" class="x" onclick="closeModal('edit-business-modal')">×</button></div>
+    <div class="modal-body">
+      <input type="hidden" id="eb-waba"><input type="hidden" id="eb-phone-id">
+      <label>Business name</label><input class="field" id="eb-name" required>
+      <label>Display / verified name</label><input class="field" id="eb-verified" required>
+      <label>Display phone number</label><input class="field" id="eb-number" required>
+    </div>
+    <div class="modal-foot"><button type="button" class="btn secondary" onclick="closeModal('edit-business-modal')">Cancel</button><button class="btn">Save changes</button></div>
+  </form></div>
+
+  <div class="modal-back" id="template-modal"><form class="modal" onsubmit="createTemplate(event)">
+    <div class="modal-head"><h2>Create template</h2><button type="button" class="x" onclick="closeModal('template-modal')">×</button></div>
+    <div class="modal-body">
+      <div class="form-row"><div><label>WABA</label><select class="field" id="tpl-waba"></select></div>
+      <div><label>Category</label><select class="field" id="tpl-category"><option>UTILITY</option><option>MARKETING</option><option>AUTHENTICATION</option></select></div></div>
+      <div class="form-row"><div><label>Name</label><input class="field" id="tpl-name" required placeholder="order_update"></div>
+      <div><label>Language</label><input class="field" id="tpl-language" value="en_US" required></div></div>
+      <label>Body</label><textarea class="field" id="tpl-body" required placeholder="Hello {{1}}, order {{2}} is ready."></textarea>
+    </div>
+    <div class="modal-foot"><button type="button" class="btn secondary" onclick="closeModal('template-modal')">Cancel</button><button class="btn">Create &amp; approve</button></div>
+  </form></div>
+
+  <div class="modal-back" id="webhook-modal"><form class="modal" onsubmit="createWebhook(event)">
+    <div class="modal-head"><h2>Subscribe a webhook</h2><button type="button" class="x" onclick="closeModal('webhook-modal')">×</button></div>
+    <div class="modal-body">
+      <label>WABA</label><select class="field" id="wh-waba"></select>
+      <label>Callback URL</label><input class="field" id="wh-url" type="url" required placeholder="http://127.0.0.1:9000/webhook">
+      <label>Verify token (optional)</label><input class="field" id="wh-verify" placeholder="my-project-verify-token">
+      <p class="card-sub" style="margin-top:10px">When supplied, Ghost performs the real hub.challenge verification before saving. Events are signed with the local app secret.</p>
+    </div>
+    <div class="modal-foot"><button type="button" class="btn secondary" onclick="closeModal('webhook-modal')">Cancel</button><button class="btn">Verify &amp; subscribe</button></div>
+  </form></div>
+
+  <div class="modal-back" id="phone-modal"><form class="modal" onsubmit="createPhone(event)">
+    <div class="modal-head"><h2>Add test customer</h2><button type="button" class="x" onclick="closeModal('phone-modal')">×</button></div>
+    <div class="modal-body">
+      <label>Phone number</label><input class="field" id="user-phone" required placeholder="15550002002">
+      <label>Display name</label><input class="field" id="user-name" required placeholder="Alice">
+    </div>
+    <div class="modal-foot"><button type="button" class="btn secondary" onclick="closeModal('phone-modal')">Cancel</button><button class="btn">Create customer</button></div>
+  </form></div>
+
+  <div class="toast" id="toast"></div>
+  <script src="/static/console.js"></script>
+</body>
+</html>

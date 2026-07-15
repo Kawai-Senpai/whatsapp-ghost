@@ -13,13 +13,14 @@ import httpx
 from fastapi import Body, FastAPI, File, Form, Header, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
 from .clock import parse_datetime, parse_duration
 from .config import Settings
 from .db import Store
 from .engine import Engine, normalize_phone
 from .errors import graph_error
-from .web_console import CONSOLE_HTML
+from .web_console import CONSOLE_HTML, PHONE_HTML, WEB_DIR
 
 
 def rows(items: list[Any]) -> list[dict[str, Any]]:
@@ -47,10 +48,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = settings
     app.state.store = store
     app.state.engine = engine
+    app.mount("/static", StaticFiles(directory=str(WEB_DIR)), name="static")
 
     @app.middleware("http")
     async def authentication(request: Request, call_next):
-        if request.url.path == "/" or request.url.path.startswith(("/_sandbox", "/webhook", "/console", "/docs", "/openapi.json", "/redoc")):
+        if request.url.path == "/" or request.url.path.startswith(("/_sandbox", "/webhook", "/console", "/phone", "/static", "/docs", "/openapi.json", "/redoc")):
             return await call_next(request)
         authorization = request.headers.get("authorization", "")
         token = authorization.removeprefix("Bearer ").strip()
@@ -74,6 +76,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/console", response_class=HTMLResponse, include_in_schema=False)
     def console_page():
         return HTMLResponse(CONSOLE_HTML)
+
+    @app.get("/phone", response_class=HTMLResponse, include_in_schema=False)
+    def phone_page():
+        return HTMLResponse(PHONE_HTML)
 
     @app.get("/_sandbox/apps")
     def sandbox_apps():
@@ -120,6 +126,30 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return JSONResponse({"error": f"Could not create business: {exc}"}, status_code=400)
         return {"business_id": business_id, "waba_id": waba_id, "phone_number_id": phone_id, "display_phone_number": display_number}
 
+    @app.patch("/_sandbox/businesses/{waba_id}")
+    def sandbox_business_update(waba_id: str, body: dict[str, Any] = Body(...)):
+        account = store.one("SELECT * FROM business_accounts WHERE id=?", (waba_id,))
+        if not account:
+            return JSONResponse({"error": "business not found"}, status_code=404)
+        store.execute("UPDATE business_accounts SET name=? WHERE id=?", (body.get("name", account["name"]), waba_id))
+        item = dict(store.one("SELECT * FROM business_accounts WHERE id=?", (waba_id,)))
+        item["phone_numbers"] = rows(store.all("SELECT * FROM phone_numbers WHERE waba_id=?", (waba_id,)))
+        return item
+
+    @app.patch("/_sandbox/phone-numbers/{phone_id}")
+    def sandbox_phone_number_update(phone_id: str, body: dict[str, Any] = Body(...)):
+        phone = store.one("SELECT * FROM phone_numbers WHERE id=?", (phone_id,))
+        if not phone:
+            return JSONResponse({"error": "phone number not found"}, status_code=404)
+        display = phone["display_phone_number"]
+        if "display_phone_number" in body:
+            display = normalize_phone(str(body["display_phone_number"])) or display
+        store.execute(
+            "UPDATE phone_numbers SET display_phone_number=?,verified_name=? WHERE id=?",
+            (display, body.get("verified_name", phone["verified_name"]), phone_id),
+        )
+        return dict(store.one("SELECT * FROM phone_numbers WHERE id=?", (phone_id,)))
+
     @app.post("/_sandbox/reset")
     def reset() -> dict[str, bool]:
         for suffix in ("", "-wal", "-shm"):
@@ -160,6 +190,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return JSONResponse({"error": "wa_id is required"}, status_code=400)
         store.execute("INSERT OR REPLACE INTO simulated_users VALUES(?,?,?,?,?)", (wa_id, body.get("display_name", wa_id), int(body.get("online", True)), int(body.get("blocked", False)), store.now().isoformat()))
         return dict(engine.user(wa_id))
+
+    @app.delete("/_sandbox/phones/{wa_id}")
+    def sandbox_phone_delete(wa_id: str):
+        normalized = normalize_phone(wa_id)
+        if not engine.user(normalized):
+            return JSONResponse({"error": "phone not found"}, status_code=404)
+        conversations = store.all("SELECT id FROM conversations WHERE user_wa_id=?", (normalized,))
+        for conversation in conversations:
+            store.execute("DELETE FROM message_status_events WHERE message_id IN (SELECT id FROM messages WHERE conversation_id=?)", (conversation["id"],))
+            store.execute("DELETE FROM messages WHERE conversation_id=?", (conversation["id"],))
+        store.execute("DELETE FROM conversations WHERE user_wa_id=?", (normalized,))
+        store.execute("DELETE FROM simulated_users WHERE wa_id=?", (normalized,))
+        return {"success": True}
 
     @app.patch("/_sandbox/phones/{wa_id}")
     def sandbox_phone_update(wa_id: str, body: dict[str, Any] = Body(...)):

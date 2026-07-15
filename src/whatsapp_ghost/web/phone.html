@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>WhatsApp</title>
+  <link rel="stylesheet" href="/static/phone.css">
+</head>
+<body>
+  <svg class="icon-sprite" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs>
+    <symbol id="p-chat" viewBox="0 0 24 24"><path d="M21 11.5a8.5 8.5 0 0 1-12.5 7.5L4 20l1-4.5A8.5 8.5 0 1 1 21 11.5z"/></symbol>
+    <symbol id="p-menu" viewBox="0 0 24 24"><circle cx="12" cy="5" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="12" cy="19" r="1.4"/></symbol>
+    <symbol id="p-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></symbol>
+    <symbol id="p-back" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></symbol>
+    <symbol id="p-emoji" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8.5 14a4 4 0 0 0 7 0"/><circle cx="9" cy="10" r=".6" fill="currentColor"/><circle cx="15" cy="10" r=".6" fill="currentColor"/></symbol>
+    <symbol id="p-attach" viewBox="0 0 24 24"><path d="M21 11l-8.5 8.5a5 5 0 0 1-7-7L14 4a3.5 3.5 0 0 1 5 5l-8.5 8.5a2 2 0 0 1-3-3L15 6"/></symbol>
+    <symbol id="p-send" viewBox="0 0 24 24"><path d="M3 20l18-8L3 4l3 8-3 8z"/><path d="M6 12h15"/></symbol>
+  </defs></svg>
+
+  <div class="app" id="app">
+    <!-- Left pane -->
+    <section class="pane">
+      <header class="pane-head">
+        <div class="me-avatar" id="me-avatar">Y</div>
+        <div class="spacer"></div>
+        <button class="icon-btn" title="New chat"><svg><use href="#p-chat"/></svg></button>
+        <button class="icon-btn" title="Menu"><svg><use href="#p-menu"/></svg></button>
+      </header>
+      <div class="search-wrap">
+        <div class="search-box"><svg><use href="#p-search"/></svg><input id="search" placeholder="Search or start new chat"></div>
+      </div>
+      <div class="chat-list" id="chat-list"></div>
+    </section>
+
+    <!-- Right / conversation -->
+    <section class="convo hidden" id="convo">
+      <header class="convo-head">
+        <button class="icon-btn hidden" id="back-btn" onclick="closeChat()"><svg><use href="#p-back"/></svg></button>
+        <div class="c-avatar" id="convo-avatar">B</div>
+        <div class="ch-main">
+          <div class="ch-name" id="convo-name">Business</div>
+          <div class="ch-status" id="convo-status">click a message to inspect its payload</div>
+        </div>
+        <div class="spacer"></div>
+        <button class="icon-btn" title="Search"><svg><use href="#p-search"/></svg></button>
+        <button class="icon-btn" title="Menu"><svg><use href="#p-menu"/></svg></button>
+      </header>
+      <div class="messages" id="messages"></div>
+      <footer class="composer">
+        <button class="icon-btn" title="Emoji"><svg><use href="#p-emoji"/></svg></button>
+        <button class="icon-btn" title="Attach image" onclick="document.getElementById('file-input').click()"><svg><use href="#p-attach"/></svg></button>
+        <input type="file" id="file-input" accept="image/*" hidden>
+        <form id="send-form">
+          <input id="msg-input" autocomplete="off" placeholder="Type a message">
+        </form>
+        <button class="send-btn" id="send-btn" title="Send" onclick="document.getElementById('send-form').requestSubmit()"><svg><use href="#p-send"/></svg></button>
+      </footer>
+    </section>
+
+    <!-- Intro screen (no chat selected) -->
+    <section class="intro" id="intro">
+      <div class="art"><svg viewBox="0 0 24 24" width="96" height="96" fill="none" stroke="#c4ccd1" stroke-width="1"><rect x="7" y="2" width="10" height="20" rx="2.5"/><path d="M11 18h2"/></svg></div>
+      <h1>WhatsApp Web</h1>
+      <p>Send and receive messages with your test business numbers. Everything runs locally on your machine and every payload is inspectable.</p>
+      <div class="lock">Local sandbox · nothing leaves your device</div>
+    </section>
+  </div>
+  <script src="/static/phone.js"></script>
+</body>
+</html>

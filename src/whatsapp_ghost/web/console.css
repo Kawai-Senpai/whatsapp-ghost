@@ -1,0 +1,182 @@
+/* ===== WhatsApp Ghost — Facebook / Meta Developer console clone ===== */
+:root{
+  --fb-blue:#0866ff; --fb-blue-dark:#0653cc;
+  --meta-bg:#f0f2f5; --panel:#ffffff; --ink:#1c1e21; --muted:#65676b;
+  --line:#dadde1; --line-soft:#e4e6eb; --hover:#f2f2f2;
+  --green:#00a884; --green-dark:#008069; --amber:#8b6508; --amber-bg:#fff4d6;
+  --danger:#e5484d; --danger-bg:#ffebe9; --ok:#31a24c; --ok-bg:#e3f2e6;
+  --radius:8px; --shadow:0 1px 2px rgba(0,0,0,.1),0 1px 3px rgba(0,0,0,.06);
+  --sidebar:#ffffff;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  font:14px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  color:var(--ink);background:var(--meta-bg);
+}
+button,input,select,textarea{font:inherit;color:inherit}
+button{cursor:pointer}
+a{color:var(--fb-blue);text-decoration:none}
+a:hover{text-decoration:underline}
+code{font:12px/1.5 ui-monospace,SFMono-Regular,"SF Mono",Consolas,monospace}
+
+/* ---- Top Meta bar ---- */
+.metabar{
+  height:56px;background:var(--panel);border-bottom:1px solid var(--line);
+  display:flex;align-items:center;gap:18px;padding:0 16px;position:sticky;top:0;z-index:30;
+}
+.metabar .logo{display:flex;align-items:center;gap:10px;font-weight:700;font-size:18px}
+.metabar .logo .infinity{
+  width:32px;height:32px;border-radius:50%;
+  background:conic-gradient(from 210deg,#0866ff,#7b2ff7,#0866ff);
+  display:grid;place-items:center;color:#fff;font-size:16px;
+}
+.metabar .logo b{color:var(--ink);letter-spacing:-.2px}
+.metabar nav{display:flex;gap:4px;margin-left:8px}
+.metabar nav a{padding:8px 12px;border-radius:6px;color:var(--ink);font-weight:600}
+.metabar nav a:hover{background:var(--hover);text-decoration:none}
+.metabar .spacer{flex:1}
+.metabar .search{
+  display:flex;align-items:center;gap:8px;background:var(--meta-bg);
+  border-radius:20px;padding:8px 14px;width:240px;color:var(--muted)
+}
+.metabar .search input{border:0;background:transparent;outline:none;flex:1;width:100%}
+.metabar .avatar-pill{
+  width:36px;height:36px;border-radius:50%;background:linear-gradient(135deg,#0866ff,#7b2ff7);
+  color:#fff;display:grid;place-items:center;font-weight:700
+}
+
+/* ---- Layout ---- */
+.layout{display:grid;grid-template-columns:280px 1fr;min-height:calc(100vh - 56px)}
+.sidebar{
+  background:var(--sidebar);border-right:1px solid var(--line);padding:16px 12px;
+  position:sticky;top:56px;height:calc(100vh - 56px);overflow:auto
+}
+.side-app{
+  display:flex;align-items:center;gap:10px;padding:10px;border:1px solid var(--line);
+  border-radius:var(--radius);margin-bottom:14px;background:var(--meta-bg)
+}
+.side-app .wa-mark{
+  width:34px;height:34px;border-radius:9px;background:linear-gradient(145deg,#25d366,#008069);
+  display:grid;place-items:center;font-size:18px
+}
+.side-app b{display:block;font-size:14px;line-height:1.2}
+.side-app small{color:var(--muted);font-size:12px}
+.side-section{color:var(--muted);font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;padding:14px 10px 6px}
+.side-link{
+  display:flex;align-items:center;gap:12px;width:100%;border:0;background:transparent;
+  padding:9px 10px;border-radius:6px;text-align:left;color:var(--ink);font-weight:500;margin:1px 0
+}
+.side-link .ico{width:20px;height:20px;color:var(--muted);flex:0 0 auto}
+svg.ico{width:20px;height:20px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.icon-sprite{position:absolute;width:0;height:0;overflow:hidden}
+.side-link:hover{background:var(--hover)}
+.side-link.active{background:#e7f0ff;color:var(--fb-blue-dark);font-weight:700}
+.side-link.active .ico{color:var(--fb-blue)}
+.side-foot{margin-top:18px;padding:12px;border-radius:var(--radius);background:var(--meta-bg);color:var(--muted);font-size:12px}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--green);margin-right:6px}
+
+/* ---- Content ---- */
+.content{padding:24px 32px;max-width:1200px}
+.page{display:none}
+.page.active{display:block;animation:fade .18s ease}
+@keyframes fade{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+.crumbs{color:var(--muted);font-size:13px;margin-bottom:6px}
+.crumbs b{color:var(--ink)}
+.head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:20px}
+.head h1{margin:0 0 4px;font-size:24px;letter-spacing:-.4px}
+.head p{margin:0;color:var(--muted);max-width:620px}
+
+/* ---- Cards / grid ---- */
+.grid{display:grid;grid-template-columns:repeat(12,1fr);gap:16px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:20px}
+.card h2{margin:0 0 4px;font-size:16px}
+.card .card-sub{color:var(--muted);margin:0 0 16px;font-size:13px}
+.span3{grid-column:span 3}.span4{grid-column:span 4}.span5{grid-column:span 5}
+.span6{grid-column:span 6}.span7{grid-column:span 7}.span8{grid-column:span 8}.span12{grid-column:span 12}
+.stat small{color:var(--muted);font-weight:600;font-size:13px}
+.stat strong{display:block;font-size:30px;margin-top:6px;letter-spacing:-.5px}
+.stat .accent{color:var(--green-dark)}
+
+/* ---- Facebook "task" checklist ---- */
+.tasklist{border:1px solid var(--line);border-radius:var(--radius);overflow:hidden}
+.task{display:flex;align-items:center;gap:14px;padding:16px 18px;border-bottom:1px solid var(--line-soft)}
+.task:last-child{border-bottom:0}
+.task .check{width:22px;height:22px;border-radius:50%;border:2px solid var(--line);flex:0 0 auto;display:grid;place-items:center;color:#fff;font-size:12px}
+.task.done .check{background:var(--ok);border-color:var(--ok)}
+.task .t-main{flex:1;min-width:0}
+.task .t-main b{display:block}
+.task .t-main span{color:var(--muted);font-size:12px}
+
+/* ---- Buttons ---- */
+.btn{border:0;border-radius:6px;padding:9px 16px;font-weight:600;background:var(--fb-blue);color:#fff}
+.btn:hover{background:var(--fb-blue-dark)}
+.btn.secondary{background:var(--meta-bg);color:var(--ink)}
+.btn.secondary:hover{background:#e4e6eb}
+.btn.ghost{background:transparent;color:var(--fb-blue);padding:8px 10px}
+.btn.ghost:hover{background:#e7f0ff}
+.btn.danger{background:var(--danger-bg);color:var(--danger)}
+.btn.wa{background:var(--green-dark)}
+.btn.wa:hover{background:var(--green)}
+.btn.small{padding:6px 11px;font-size:12px}
+.actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.btn svg{width:15px;height:15px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;vertical-align:-2px;margin-right:5px}
+.btn.small svg{width:13px;height:13px;margin-right:4px}
+.btn.icon-only svg{margin-right:0}
+
+/* ---- Endpoint block ---- */
+.endpoint{background:#1c2128;color:#d6e1e5;border-radius:var(--radius);padding:16px;overflow:auto;font:12px ui-monospace,monospace}
+.endpoint .verb{color:#7ee787;font-weight:700}
+.endpoint .host{color:#79c0ff}
+
+/* ---- Rows / list items ---- */
+.list{display:grid;gap:12px}
+.item{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:16px 18px}
+.item .item-head{display:flex;align-items:center;gap:12px}
+.item .avatar{width:40px;height:40px;border-radius:10px;display:grid;place-items:center;background:#e7f0ff;color:var(--fb-blue);font-weight:800;flex:0 0 auto}
+.item .avatar.wa{background:#dff5ee;color:var(--green-dark)}
+.item .grow{flex:1;min-width:0}
+.item .grow b{display:flex;align-items:center;gap:8px}
+.item .grow small{color:var(--muted);display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.badge{font-size:11px;font-weight:700;padding:3px 8px;border-radius:20px;background:var(--ok-bg);color:var(--ok)}
+.badge.gray{background:var(--meta-bg);color:var(--muted)}
+.badge.amber{background:var(--amber-bg);color:var(--amber)}
+.badge.blue{background:#e7f0ff;color:var(--fb-blue-dark)}
+.secret{display:flex;gap:8px;align-items:center;background:var(--meta-bg);border-radius:6px;padding:8px 10px;margin-top:6px}
+.secret code{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+.field-label{display:block;font-size:12px;font-weight:700;color:var(--muted);margin:14px 0 4px}
+.subnumber{display:flex;align-items:center;gap:12px;padding:10px 0;border-top:1px solid var(--line-soft);margin-top:12px}
+.empty{text-align:center;padding:40px;color:var(--muted);background:var(--panel);border:1px dashed var(--line);border-radius:var(--radius)}
+
+/* ---- Forms / modal ---- */
+label{display:block;font-size:13px;font-weight:600;margin:14px 0 5px}
+.field{width:100%;border:1px solid var(--line);border-radius:6px;padding:10px 12px;background:var(--panel);outline:none}
+.field:focus{border-color:var(--fb-blue);box-shadow:0 0 0 3px rgba(8,102,255,.15)}
+textarea.field{min-height:88px;resize:vertical}
+.form-row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.modal-back{display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:50;place-items:center}
+.modal-back.open{display:grid}
+.modal{background:var(--panel);width:min(520px,calc(100vw - 32px));max-height:90vh;overflow:auto;border-radius:12px;box-shadow:0 24px 70px rgba(0,0,0,.35)}
+.modal-head{display:flex;justify-content:space-between;align-items:center;padding:16px 20px;border-bottom:1px solid var(--line)}
+.modal-head h2{margin:0;font-size:18px}
+.modal-body{padding:20px}
+.modal-foot{padding:14px 20px;border-top:1px solid var(--line);display:flex;justify-content:flex-end;gap:8px}
+.x{border:0;background:none;font-size:24px;line-height:1;color:var(--muted);width:34px;height:34px;border-radius:50%}
+.x:hover{background:var(--hover)}
+
+/* ---- Chat preview (compact, inside console) ---- */
+.mini-hint{display:flex;gap:12px;align-items:center;padding:14px;border:1px solid var(--line);border-radius:var(--radius);margin-bottom:12px}
+
+/* ---- Toast ---- */
+.toast{position:fixed;left:50%;bottom:28px;transform:translate(-50%,80px);z-index:80;background:#1c2128;color:#fff;padding:12px 18px;border-radius:8px;box-shadow:0 12px 40px rgba(0,0,0,.3);opacity:0;transition:.25s;font-weight:500}
+.toast.show{transform:translate(-50%,0);opacity:1}
+.toast.bad{background:var(--danger)}
+
+@media(max-width:900px){
+  .layout{grid-template-columns:1fr}
+  .sidebar{display:none}
+  .content{padding:18px}
+  .span3,.span4,.span5,.span6,.span7,.span8{grid-column:span 12}
+  .metabar .search{display:none}
+  .form-row{grid-template-columns:1fr}
+}
