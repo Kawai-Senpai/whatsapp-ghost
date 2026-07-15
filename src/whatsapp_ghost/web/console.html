@@ -16,6 +16,7 @@
     <symbol id="i-template" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M4 9h16M9 9v11"/></symbol>
     <symbol id="i-webhook" viewBox="0 0 24 24"><circle cx="7" cy="18" r="2.5"/><circle cx="17" cy="18" r="2.5"/><circle cx="12" cy="6" r="2.5"/><path d="M10.7 8.1l-3.2 7.5M13.3 8.1l3.2 7.5M9.5 18h5"/></symbol>
     <symbol id="i-phone" viewBox="0 0 24 24"><rect x="7" y="2" width="10" height="20" rx="2.5"/><path d="M11 18h2"/></symbol>
+    <symbol id="i-guide" viewBox="0 0 24 24"><path d="M4 5.5A3.5 3.5 0 0 1 7.5 2H20v17H7.5A3.5 3.5 0 0 0 4 22z"/><path d="M4 5.5V22M8 6h8M8 10h8"/></symbol>
     <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></symbol>
     <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h8"/></symbol>
     <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
@@ -30,7 +31,8 @@
     <div class="logo"><span class="infinity"><svg viewBox="0 0 40 22" width="26" height="15" fill="none" stroke="#fff" stroke-width="3.4" aria-hidden="true"><path d="M6 11c0-4 2-7 5-7 4 0 6 5 9 5s5-5 9-5c3 0 5 3 5 7s-2 7-5 7c-4 0-6-5-9-5s-5 5-9 5c-3 0-5-3-5-7z"/></svg></span><b>Meta for Developers</b></div>
     <nav>
       <a href="#" data-page="overview">My Apps</a>
-      <a href="/docs" target="_blank">Docs</a>
+      <a href="/guide">Guide</a>
+      <a href="/docs" target="_blank">API reference</a>
       <a href="#" data-page="resources">Tools</a>
       <a href="#" data-page="webhooks">Support</a>
     </nav>
@@ -60,6 +62,7 @@
       <button class="side-link" data-page="webhooks"><svg class="ico"><use href="#i-webhook"/></svg> Webhooks</button>
 
       <div class="side-section">Test tools</div>
+      <button class="side-link" data-page="guide"><svg class="ico"><use href="#i-guide"/></svg> Integration Guide</button>
       <button class="side-link" data-page="simulator"><svg class="ico"><use href="#i-phone"/></svg> Phone Simulator</button>
 
       <div class="side-foot"><span class="dot"></span>Runs only on your machine<br><span id="base-small">127.0.0.1:8787</span> · <span id="mode-foot">STRICT</span></div>
@@ -128,7 +131,7 @@
         <div class="hierarchy-strip" aria-label="Resource hierarchy">
           <span>Developer app</span><i>→</i><span>Business</span><i>→</i><span>WhatsApp Business Account</span><i>→</i><span>Sender phone</span><i>→</i><span>Customer chats</span>
         </div>
-        <div class="info-callout"><b>One click creates the complete local sender setup.</b> “Add business” creates a Business ID, its WABA, and its first registered phone-number ID together. You can create as many independent businesses as you need.</div>
+        <div class="info-callout"><b>A WABA can own multiple sender numbers.</b> "Add business" creates the Business ID, WABA, and first sender. Use "Add sender" on that business to attach more numbers. Each sender gets its own phone-number ID, chat history, and 24-hour customer window.</div>
         <div class="list" id="business-list"></div>
       </section>
 
@@ -165,6 +168,43 @@
           <input class="field" id="hook-search" oninput="renderWebhookHistory()" placeholder="Search event, ID, WABA, or destination">
         </div>
         <div class="list" id="webhook-list"></div>
+      </section>
+
+      <!-- INTEGRATION GUIDE -->
+      <section class="page" id="guide">
+        <div class="crumbs">Docs / <b>Integration Guide</b></div>
+        <div class="head"><div><h1>Connect an application in minutes</h1><p>Choose your local resources once. Every request below updates automatically and can be copied as-is.</p></div>
+          <a class="btn secondary" href="/docs" target="_blank"><svg><use href="#i-open"/></svg>API reference</a></div>
+        <div class="guide-config card">
+          <div><label>Developer app / token</label><select class="field" id="guide-app" onchange="renderGuide()"></select></div>
+          <div><label>Business sender</label><select class="field" id="guide-sender" onchange="renderGuide()"></select></div>
+          <div><label>Test customer</label><select class="field" id="guide-customer" onchange="renderGuide()"></select></div>
+        </div>
+        <div class="guide-layout">
+          <nav class="guide-nav" aria-label="Guide steps">
+            <a href="#guide-1"><span>1</span>Credentials</a><a href="#guide-2"><span>2</span>Send a message</a><a href="#guide-3"><span>3</span>Receive webhooks</a><a href="#guide-4"><span>4</span>Templates &amp; 24h</a><a href="#guide-5"><span>5</span>Multiple senders</a><a href="#guide-help"><span>?</span>Troubleshooting</a>
+          </nav>
+          <div class="guide-content">
+            <article class="guide-step" id="guide-1"><div class="step-number">1</div><div><h2>Use the local URL and Bearer token</h2><p>Replace only Meta's host with Ghost. Keep the Graph version, phone-number ID, authorization header, and JSON contract.</p>
+              <div class="guide-values"><div><small>Base URL</small><code id="guide-base"></code></div><div><small>Access token</small><code id="guide-token"></code></div><div><small>Phone-number ID</small><code id="guide-phone-id"></code></div></div>
+              <div class="actions"><button class="btn secondary small" onclick="copyGuide('guide-token')"><svg><use href="#i-copy"/></svg>Copy token</button><button class="btn secondary small" onclick="copyGuide('guide-phone-id')"><svg><use href="#i-copy"/></svg>Copy phone ID</button></div></div></article>
+            <article class="guide-step" id="guide-2"><div class="step-number">2</div><div><h2>Send a text message</h2><p>The sender is selected by <code>{PHONE_NUMBER_ID}</code> in the URL. There is no <code>from</code> field.</p>
+              <div class="code-tabs"><button class="active" onclick="guideTab(event,'curl')">cURL</button><button onclick="guideTab(event,'powershell')">PowerShell</button><button onclick="guideTab(event,'python')">Python</button><button onclick="guideTab(event,'javascript')">JavaScript</button></div>
+              <div class="code-wrap"><button class="code-copy" onclick="copyGuide('guide-send-code')"><svg class="ico"><use href="#i-copy"/></svg> Copy</button><pre class="code-block" id="guide-send-code"></pre></div>
+              <div class="expected"><b>Expected response</b><code>{ "messaging_product": "whatsapp", "messages": [{ "id": "wamid..." }] }</code></div>
+              <div class="actions"><button class="btn wa" onclick="openGuidePhone()"><svg><use href="#i-open"/></svg>Open this customer's phone</button></div></div></article>
+            <article class="guide-step" id="guide-3"><div class="step-number">3</div><div><h2>Receive and inspect webhooks</h2><p>Subscribe a callback under Webhooks. Ghost performs <code>hub.challenge</code> verification, signs POST bodies with <code>X-Hub-Signature-256</code>, and retains every event and attempt.</p>
+              <div class="code-wrap"><button class="code-copy" onclick="copyGuide('guide-webhook-code')"><svg class="ico"><use href="#i-copy"/></svg> Copy</button><pre class="code-block" id="guide-webhook-code"></pre></div>
+              <div class="info-callout"><b>Use raw request bytes for signature validation.</b> Parse JSON only after comparing the HMAC with your app secret.</div><div class="actions"><button class="btn secondary" data-page="webhooks">Configure and view history</button></div></div></article>
+            <article class="guide-step" id="guide-4"><div class="step-number">4</div><div><h2>Test templates and the 24-hour window</h2><p>A customer message opens a sender-and-customer-specific service window for 24 hours. Free-form business messages work inside it; outside it, strict mode returns error <code>131047</code> and requires an approved template.</p>
+              <div class="code-wrap"><button class="code-copy" onclick="copyGuide('guide-template-code')"><svg class="ico"><use href="#i-copy"/></svg> Copy</button><pre class="code-block" id="guide-template-code"></pre></div>
+              <ol class="guide-checks"><li>Open the customer's phone and send the business a first message.</li><li>Send free-form API replies and watch sent, delivered, and read ticks.</li><li>Use <b>Advance 25h</b>, confirm text is rejected, then send the template.</li></ol></div></article>
+            <article class="guide-step" id="guide-5"><div class="step-number">5</div><div><h2>Send from multiple business numbers</h2><p>One business account can contain several sender phones. Templates and webhook subscription belong to the WABA; identity, history, delivery ticks, and customer-service windows belong to each sender/customer pair.</p>
+              <div class="sender-diagram"><b id="guide-waba-name">Business / WABA</b><span>contains</span><div id="guide-sender-list"></div></div><p>Switch the phone-number ID in the request path to choose the sender:</p>
+              <div class="code-wrap"><button class="code-copy" onclick="copyGuide('guide-multi-code')"><svg class="ico"><use href="#i-copy"/></svg> Copy</button><pre class="code-block" id="guide-multi-code"></pre></div><div class="actions"><button class="btn" onclick="openGuideAddSender()"><svg><use href="#i-plus"/></svg>Add sender to this WABA</button></div></div></article>
+            <article class="guide-step" id="guide-help"><div class="step-number">?</div><div><h2>Troubleshooting</h2><div class="trouble-grid"><div><b>401 / error 190</b><p>Use the selected local token in <code>Authorization: Bearer ...</code>.</p></div><div><b>Error 131047</b><p>Open the 24-hour window with a customer message or use a template.</p></div><div><b>Error 132001</b><p>Create the template under the sender's WABA and match its name/language.</p></div><div><b>No webhook arrived</b><p>Check subscription status and the formatted delivery/attempt history.</p></div></div></div></article>
+          </div>
+        </div>
       </section>
 
       <!-- SIMULATOR -->
@@ -227,6 +267,16 @@
       <label>Display phone number</label><input class="field" id="eb-number" required>
     </div>
     <div class="modal-foot"><button type="button" class="btn secondary" onclick="closeModal('edit-business-modal')">Cancel</button><button class="btn">Save changes</button></div>
+  </form></div>
+
+  <div class="modal-back" id="sender-modal"><form class="modal" onsubmit="createSender(event)">
+    <div class="modal-head"><h2>Add sender number</h2><button type="button" class="x" onclick="closeModal('sender-modal')">&times;</button></div>
+    <div class="modal-body"><input type="hidden" id="sender-waba">
+      <p class="card-sub">Attach another phone-number identity to <b id="sender-business-name"></b>.</p>
+      <label>Verified display name</label><input class="field" id="sender-verified" required placeholder="Acme Sales">
+      <label>Business phone number</label><input class="field" id="sender-number" required placeholder="15550003001">
+    </div>
+    <div class="modal-foot"><button type="button" class="btn secondary" onclick="closeModal('sender-modal')">Cancel</button><button class="btn">Add sender</button></div>
   </form></div>
 
   <div class="modal-back" id="template-modal"><form class="modal" onsubmit="createTemplate(event)">

@@ -74,6 +74,9 @@ def test_auth_and_webhook_verification(tmp_path: Path) -> None:
         console = client.get("/console")
         assert console.status_code == 200
         assert "Meta for Developers" in console.text
+        guide = client.get("/guide")
+        assert guide.status_code == 200
+        assert "Connect an application in minutes" in guide.text
         phone = client.get("/phone")
         assert phone.status_code == 200
         assert "WhatsApp Web" in phone.text
@@ -132,3 +135,51 @@ def test_multi_business_conversations_and_read_ticks(tmp_path: Path) -> None:
             for status in delivery["request_body"]["entry"][0]["changes"][0]["value"].get("statuses", [])
         ]
         assert "read" in message_statuses
+
+
+def test_multiple_sender_numbers_under_one_waba(tmp_path: Path) -> None:
+    app = create_app(make_settings(tmp_path))
+    headers = {"Authorization": "Bearer token"}
+    with TestClient(app) as client:
+        added = client.post("/_sandbox/businesses/WABA_LOCAL/phone-numbers", json={
+            "verified_name": "Ghost Sales", "display_phone_number": "+1 (555) 000-1001",
+        })
+        assert added.status_code == 201
+        second_phone = added.json()["id"]
+        assert added.json()["waba_id"] == "WABA_LOCAL"
+        assert added.json()["display_phone_number"] == "15550001001"
+
+        numbers = client.get("/v25.0/WABA_LOCAL/phone_numbers", headers=headers).json()["data"]
+        assert {item["id"] for item in numbers} == {"PHONE_LOCAL", second_phone}
+
+        client.post("/_sandbox/phones/15550002001/messages", json={
+            "type": "text", "text": "Message sales", "phone_number_id": second_phone,
+        })
+        client.post("/_sandbox/phones/15550002001/messages", json={
+            "type": "text", "text": "Message support", "phone_number_id": "PHONE_LOCAL",
+        })
+        sales = client.get("/_sandbox/messages", params={
+            "wa_id": "15550002001", "phone_number_id": second_phone,
+        }).json()["data"]
+        support = client.get("/_sandbox/messages", params={
+            "wa_id": "15550002001", "phone_number_id": "PHONE_LOCAL",
+        }).json()["data"]
+        assert sales[0]["payload"]["text"]["body"] == "Message sales"
+        assert support[0]["payload"]["text"]["body"] == "Message support"
+
+
+def test_message_order_is_stable_when_clock_is_frozen(tmp_path: Path) -> None:
+    app = create_app(make_settings(tmp_path))
+    with TestClient(app) as client:
+        client.post("/_sandbox/clock", json={"action": "set", "value": "2026-07-15T12:00:00Z"})
+        for text in ("First", "Second"):
+            response = client.post("/_sandbox/phones/15550002001/messages", json={
+                "type": "text", "text": text, "phone_number_id": "PHONE_LOCAL",
+            })
+            assert response.status_code == 201
+
+        history = client.get("/_sandbox/messages", params={
+            "wa_id": "15550002001", "phone_number_id": "PHONE_LOCAL",
+        }).json()["data"]
+        assert history[0]["created_at"] == history[1]["created_at"]
+        assert [message["payload"]["text"]["body"] for message in history] == ["Second", "First"]

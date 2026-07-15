@@ -1,5 +1,6 @@
 /* ===== WhatsApp Ghost developer console ===== */
 const state = { config:{}, apps:[], businesses:[], users:[], messages:[], webhooks:[], subscriptions:[] };
+let guideLanguage = 'curl';
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const initials = s => (s||'?').trim().slice(0,2).toUpperCase();
@@ -32,6 +33,7 @@ function goto(page){
   window.scrollTo(0,0);
   if(page==='webhooks') loadWebhooks();
   if(page==='templates') loadTemplates();
+  if(page==='guide') renderGuide();
 }
 document.querySelectorAll('[data-page]').forEach(b=>b.addEventListener('click',e=>{ e.preventDefault(); goto(b.dataset.page); }));
 
@@ -90,6 +92,7 @@ function renderBusinesses(){
         <div class="avatar wa">${esc(initials(b.name))}</div>
         <div class="grow"><b>${esc(b.name)} <span class="badge blue">BUSINESS</span></b>
           <small>${b.phone_numbers.length} registered sender${b.phone_numbers.length===1?'':'s'}</small></div>
+        <button class="btn small" onclick='openSenderModal(${JSON.stringify(b.id)},${JSON.stringify(b.name)})'><svg><use href="#i-plus"/></svg>Add sender</button>
       </div>
       <div class="resource-path">
         <div><small>Business ID</small><code>${esc(b.business_id)}</code></div>
@@ -126,6 +129,14 @@ function fillSelectors(){
     || '<option value="">— add a customer first —</option>';
   const bizNums=[]; state.businesses.forEach(b=>b.phone_numbers.forEach(p=>bizNums.push(`<option value="${esc(p.id)}">${esc(p.verified_name)} · +${esc(p.display_phone_number)}</option>`)));
   $('#sim-business').innerHTML = bizNums.join('') || '<option value="">— add a business first —</option>';
+  const appValue=$('#guide-app')?.value, senderValue=$('#guide-sender')?.value, customerValue=$('#guide-customer')?.value;
+  if($('#guide-app')) $('#guide-app').innerHTML=state.apps.map(a=>`<option value="${esc(a.id)}">${esc(a.name)} · ${esc(a.id)}</option>`).join('')||'<option value="">Default local token</option>';
+  if($('#guide-sender')) $('#guide-sender').innerHTML=bizNums.join('')||'<option value="">Add a business sender first</option>';
+  if($('#guide-customer')) $('#guide-customer').innerHTML=state.users.map(u=>`<option value="${esc(u.wa_id)}">${esc(u.display_name)} · +${esc(u.wa_id)}</option>`).join('')||'<option value="">Add a test customer first</option>';
+  if(appValue&&[...$('#guide-app').options].some(o=>o.value===appValue)) $('#guide-app').value=appValue;
+  if(senderValue&&[...$('#guide-sender').options].some(o=>o.value===senderValue)) $('#guide-sender').value=senderValue;
+  if(customerValue&&[...$('#guide-customer').options].some(o=>o.value===customerValue)) $('#guide-customer').value=customerValue;
+  renderGuide();
 }
 
 /* ---- templates / webhooks ---- */
@@ -178,6 +189,42 @@ function renderWebhookHistory(){
 }
 function copyWebhook(id){const item=state.webhooks.find(w=>w.id===id);if(item)copyText(JSON.stringify(item.request_body,null,2));}
 
+/* ---- live integration guide ---- */
+function selectedGuideResources(){
+  const phoneId=$('#guide-sender')?.value||state.businesses[0]?.phone_numbers[0]?.id||'';
+  const business=state.businesses.find(b=>b.phone_numbers.some(p=>p.id===phoneId));
+  const phone=business?.phone_numbers.find(p=>p.id===phoneId);
+  const app=state.apps.find(a=>a.id===$('#guide-app')?.value)||state.apps[0];
+  return {phoneId,business,phone,app,customer:$('#guide-customer')?.value||state.users[0]?.wa_id||''};
+}
+function renderGuide(){
+  if(!$('#guide-send-code')||!state.config.base_url) return;
+  const {phoneId,business,phone,app,customer}=selectedGuideResources();
+  const base=state.config.base_url, token=app?.access_token||state.config.access_token||'YOUR_LOCAL_TOKEN';
+  const secret=app?.app_secret||'YOUR_APP_SECRET', sender=phoneId||'PHONE_NUMBER_ID', recipient=customer||'CUSTOMER_NUMBER';
+  const url=`${base}/v25.0/${sender}/messages`;
+  const body={messaging_product:'whatsapp',to:recipient,type:'text',text:{body:'Hello from WhatsApp Ghost!'}};
+  const compact=JSON.stringify(body), pretty=JSON.stringify(body,null,2);
+  const samples={
+    curl:`curl -X POST "${url}" \\\n  -H "Authorization: Bearer ${token}" \\\n  -H "Content-Type: application/json" \\\n  -d '${compact}'`,
+    powershell:`$headers = @{ Authorization = "Bearer ${token}" }\n$body = '${compact}'\nInvoke-RestMethod -Method Post -Uri "${url}" \`\n  -Headers $headers -ContentType "application/json" -Body $body`,
+    python:`import requests\n\nresponse = requests.post(\n    "${url}",\n    headers={"Authorization": "Bearer ${token}"},\n    json=${pretty.replace(/^/gm,'    ').trimStart()}\n)\nresponse.raise_for_status()\nprint(response.json())`,
+    javascript:`const response = await fetch("${url}", {\n  method: "POST",\n  headers: {\n    "Authorization": "Bearer ${token}",\n    "Content-Type": "application/json"\n  },\n  body: JSON.stringify(${pretty.replace(/^/gm,'  ').trimStart()})\n});\nconsole.log(await response.json());`
+  };
+  $('#guide-base').textContent=base; $('#guide-token').textContent=token; $('#guide-phone-id').textContent=sender;
+  $('#guide-send-code').textContent=samples[guideLanguage];
+  $('#guide-webhook-code').textContent=`# FastAPI receiver with Meta-compatible verification and signature checks\nimport hashlib, hmac\nfrom fastapi import FastAPI, HTTPException, Query, Request\nfrom fastapi.responses import PlainTextResponse\n\napp = FastAPI()\nVERIFY_TOKEN = "choose-a-verify-token"\nAPP_SECRET = "${secret}"\n\n@app.get("/webhook")\ndef verify(\n    mode: str = Query(alias="hub.mode"),\n    token: str = Query(alias="hub.verify_token"),\n    challenge: str = Query(alias="hub.challenge"),\n):\n    if mode == "subscribe" and token == VERIFY_TOKEN:\n        return PlainTextResponse(challenge)\n    raise HTTPException(403)\n\n@app.post("/webhook")\nasync def receive(request: Request):\n    raw = await request.body()\n    expected = "sha256=" + hmac.new(APP_SECRET.encode(), raw, hashlib.sha256).hexdigest()\n    supplied = request.headers.get("X-Hub-Signature-256", "")\n    if not hmac.compare_digest(expected, supplied):\n        raise HTTPException(401, "Invalid signature")\n    payload = await request.json()\n    print(payload)\n    return {"ok": True}`;
+  $('#guide-template-code').textContent=`curl -X POST "${url}" \\\n  -H "Authorization: Bearer ${token}" \\\n  -H "Content-Type: application/json" \\\n  -d '${JSON.stringify({messaging_product:'whatsapp',to:recipient,type:'template',template:{name:'hello_world',language:{code:'en_US'},components:[{type:'body',parameters:[{type:'text',text:'Tester'}]}]}})}'`;
+  const siblings=business?.phone_numbers||[];
+  $('#guide-waba-name').textContent=business?`${business.name} · ${business.id}`:'Create a business first';
+  $('#guide-sender-list').innerHTML=siblings.map(p=>`<span class="sender-chip">${esc(p.verified_name)} · ${esc(p.id)}</span>`).join('')||'<span class="sender-chip">No sender yet</span>';
+  $('#guide-multi-code').textContent=siblings.map(p=>`POST ${base}/v25.0/${p.id}/messages  # ${p.verified_name}`).join('\n')||`POST ${base}/v25.0/PHONE_NUMBER_ID/messages`;
+}
+function guideTab(event,language){guideLanguage=language;document.querySelectorAll('.code-tabs button').forEach(b=>b.classList.toggle('active',b===event.currentTarget));renderGuide();}
+function copyGuide(id){copyText($('#'+id)?.textContent||'');}
+function openGuidePhone(){const {phoneId,customer}=selectedGuideResources();if(!customer){toast('Add a test customer first',true);return;}window.open(phoneUrl(customer,phoneId),'ghost-phone-'+customer+'-'+phoneId);}
+function openGuideAddSender(){const {business}=selectedGuideResources();if(!business){toast('Add a business first',true);goto('resources');return;}openSenderModal(business.id,business.name);}
+
 /* ---- actions ---- */
 async function createApp(e){ e.preventDefault();
   try{ await req('/_sandbox/apps',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:$('#app-name').value})});
@@ -187,6 +234,12 @@ async function createBusiness(e){ e.preventDefault();
   try{ await req('/_sandbox/businesses',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({name:$('#biz-name').value,verified_name:$('#biz-verified').value,display_phone_number:$('#biz-phone').value})});
     closeModal('business-modal'); e.target.reset(); toast('Business, WABA and sender created'); loadAll(); }catch(x){ toast(x.message,true); } }
+
+function openSenderModal(waba,name){$('#sender-waba').value=waba;$('#sender-business-name').textContent=name;$('#sender-verified').value=name;openModal('sender-modal');}
+async function createSender(e){e.preventDefault();try{
+  await req(`/_sandbox/businesses/${$('#sender-waba').value}/phone-numbers`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({verified_name:$('#sender-verified').value,display_phone_number:$('#sender-number').value})});
+  closeModal('sender-modal');e.target.reset();toast('Sender added to this WABA');await loadAll();
+}catch(x){toast(x.message,true);}}
 
 function editBusiness(waba,name,phoneId,verified,number){
   $('#eb-waba').value=waba; $('#eb-phone-id').value=phoneId;
@@ -243,5 +296,6 @@ function openPhoneForBusiness(phoneId){
 
 /* ---- modal backdrop close + boot ---- */
 document.querySelectorAll('.modal-back').forEach(m=>m.addEventListener('click',e=>{ if(e.target===m) m.classList.remove('open'); }));
-if(location.hash==='#simulator') goto('simulator');
+if(location.pathname==='/guide') goto('guide');
+else if(location.hash==='#simulator') goto('simulator');
 loadAll();

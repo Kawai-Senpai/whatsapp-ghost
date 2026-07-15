@@ -17,7 +17,7 @@ uv sync
 uv run ghost.py start
 ```
 
-No configuration is required. Open [http://127.0.0.1:8787](http://127.0.0.1:8787) for the visual developer console. It provides local app/token creation, WABA and sender setup, template management, webhook inspection, time travel, and a browser phone simulator. The interactive API reference is at [http://127.0.0.1:8787/docs](http://127.0.0.1:8787/docs). Then open another terminal for the Textual phone:
+No configuration is required. Open [http://127.0.0.1:8787](http://127.0.0.1:8787) for the visual developer console. It provides local app/token creation, WABA and sender setup, template management, webhook inspection, time travel, and a browser phone simulator. The step-by-step guide with live, copyable examples is at [http://127.0.0.1:8787/guide](http://127.0.0.1:8787/guide), and the interactive API reference is at [http://127.0.0.1:8787/docs](http://127.0.0.1:8787/docs). Then open another terminal for the Textual phone:
 
 ```powershell
 uv run ghost.py phone open 15550002001
@@ -64,6 +64,16 @@ To test your project's webhook without commands:
 5. Inspect signatures and raw payloads—or replay a delivery—from the console's Webhook Inspector.
 
 The phone selector lets you switch among all simulated customers. You may also open the console in several browser windows or use separate Textual terminals for simultaneous users.
+
+### Multiple sender numbers
+
+One WABA can own multiple business sender numbers. In **API Setup & Numbers**, create a business and then use **Add sender** on its card for each additional number. Retrieve all of them through the compatible route:
+
+```http
+GET /v25.0/{WABA_ID}/phone_numbers
+```
+
+Choose the sender by placing its phone-number ID in the message URL: `POST /v25.0/{PHONE_NUMBER_ID}/messages`. There is no `from` field. Templates and webhook subscription are shared at WABA scope; sender identity, message history, ticks, and the 24-hour window are isolated for each sender/customer pair. Ghost does not impose Meta account-tier number quotas on local test rows.
 
 ## Your first complete conversation
 

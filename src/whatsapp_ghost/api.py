@@ -52,7 +52,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.middleware("http")
     async def authentication(request: Request, call_next):
-        if request.url.path == "/" or request.url.path.startswith(("/_sandbox", "/webhook", "/console", "/phone", "/static", "/docs", "/openapi.json", "/redoc")):
+        if request.url.path == "/" or request.url.path.startswith(("/_sandbox", "/webhook", "/console", "/guide", "/phone", "/static", "/docs", "/openapi.json", "/redoc")):
             return await call_next(request)
         authorization = request.headers.get("authorization", "")
         token = authorization.removeprefix("Bearer ").strip()
@@ -75,6 +75,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/console", response_class=HTMLResponse, include_in_schema=False)
     def console_page():
+        return HTMLResponse(CONSOLE_HTML)
+
+    @app.get("/guide", response_class=HTMLResponse, include_in_schema=False)
+    def guide_page():
         return HTMLResponse(CONSOLE_HTML)
 
     @app.get("/phone", response_class=HTMLResponse, include_in_schema=False)
@@ -135,6 +139,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         item = dict(store.one("SELECT * FROM business_accounts WHERE id=?", (waba_id,)))
         item["phone_numbers"] = rows(store.all("SELECT * FROM phone_numbers WHERE waba_id=?", (waba_id,)))
         return item
+
+    @app.post("/_sandbox/businesses/{waba_id}/phone-numbers", status_code=201)
+    def sandbox_phone_number_create(waba_id: str, body: dict[str, Any] = Body(...)):
+        account = store.one("SELECT * FROM business_accounts WHERE id=?", (waba_id,))
+        if not account:
+            return JSONResponse({"error": "business account not found"}, status_code=404)
+        display_number = normalize_phone(str(body.get("display_phone_number", "")))
+        if not display_number:
+            return JSONResponse({"error": "display_phone_number is required"}, status_code=400)
+        phone_id = "PHONE_" + secrets.token_hex(4).upper()
+        try:
+            store.execute(
+                "INSERT INTO phone_numbers(id,waba_id,display_phone_number,verified_name,created_at) VALUES(?,?,?,?,?)",
+                (phone_id, waba_id, display_number, body.get("verified_name") or account["name"], store.now().isoformat()),
+            )
+        except Exception as exc:
+            return JSONResponse({"error": f"Could not add sender: {exc}"}, status_code=400)
+        return dict(store.one("SELECT * FROM phone_numbers WHERE id=?", (phone_id,)))
 
     @app.patch("/_sandbox/phone-numbers/{phone_id}")
     def sandbox_phone_number_update(phone_id: str, body: dict[str, Any] = Body(...)):
@@ -251,13 +273,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if wa_id and phone_number_id:
             result = store.all(
                 "SELECT m.* FROM messages m JOIN conversations c ON c.id=m.conversation_id "
-                "WHERE c.user_wa_id=? AND c.phone_number_id=? ORDER BY m.created_at DESC LIMIT ?",
+                "WHERE c.user_wa_id=? AND c.phone_number_id=? "
+                "ORDER BY m.created_at DESC, m.rowid DESC LIMIT ?",
                 (normalize_phone(wa_id), phone_number_id, limit),
             )
         elif wa_id:
-            result = store.all("SELECT * FROM messages WHERE sender_id=? OR recipient_id=? ORDER BY created_at DESC LIMIT ?", (normalize_phone(wa_id), normalize_phone(wa_id), limit))
+            result = store.all(
+                "SELECT * FROM messages WHERE sender_id=? OR recipient_id=? "
+                "ORDER BY created_at DESC, rowid DESC LIMIT ?",
+                (normalize_phone(wa_id), normalize_phone(wa_id), limit),
+            )
         else:
-            result = store.all("SELECT * FROM messages ORDER BY created_at DESC LIMIT ?", (limit,))
+            result = store.all("SELECT * FROM messages ORDER BY created_at DESC, rowid DESC LIMIT ?", (limit,))
         data = rows(result)
         for item in data:
             item["payload"] = json.loads(item.pop("payload_json"))
