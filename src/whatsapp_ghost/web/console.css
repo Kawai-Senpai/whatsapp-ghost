@@ -27,10 +27,9 @@ code{font:12px/1.5 ui-monospace,SFMono-Regular,"SF Mono",Consolas,monospace}
 }
 .metabar .logo{display:flex;align-items:center;gap:10px;font-weight:700;font-size:18px}
 .metabar .logo .infinity{
-  width:32px;height:32px;border-radius:50%;
-  background:conic-gradient(from 210deg,#0866ff,#7b2ff7,#0866ff);
-  display:grid;place-items:center;color:#fff;font-size:16px;
+  width:32px;height:32px;display:grid;place-items:center;
 }
+.metabar .logo .infinity img{width:29px;height:29px;display:block;filter:invert(36%) sepia(84%) saturate(2424%) hue-rotate(201deg) brightness(102%) contrast(101%)}
 .metabar .logo b{color:var(--ink);letter-spacing:-.2px}
 .metabar nav{display:flex;gap:4px;margin-left:8px}
 .metabar nav a{padding:8px 12px;border-radius:6px;color:var(--ink);font-weight:600}
@@ -57,9 +56,10 @@ code{font:12px/1.5 ui-monospace,SFMono-Regular,"SF Mono",Consolas,monospace}
   border-radius:var(--radius);margin-bottom:14px;background:var(--meta-bg)
 }
 .side-app .wa-mark{
-  width:34px;height:34px;border-radius:9px;background:linear-gradient(145deg,#25d366,#008069);
-  display:grid;place-items:center;font-size:18px
+  width:34px;height:34px;border-radius:9px;background:#dff5ee;
+  display:grid;place-items:center
 }
+.side-app .wa-mark img{width:25px;height:25px;display:block;filter:invert(48%) sepia(61%) saturate(742%) hue-rotate(121deg) brightness(87%) contrast(101%)}
 .side-app b{display:block;font-size:14px;line-height:1.2}
 .side-app small{color:var(--muted);font-size:12px}
 .side-section{color:var(--muted);font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;padding:14px 10px 6px}
