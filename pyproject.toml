@@ -1,0 +1,34 @@
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[project]
+name = "whatsapp-ghost"
+version = "0.1.0"
+description = "A contract-compatible local sandbox for the WhatsApp Cloud API"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+dependencies = [
+  "fastapi>=0.115,<1",
+  "httpx>=0.27,<1",
+  "python-multipart>=0.0.12,<1",
+  "python-dotenv>=1.0,<2",
+  "plyer>=2.1,<3",
+  "rich>=13.9,<15",
+  "textual>=0.89,<3",
+  "typer>=0.15,<1",
+  "uvicorn[standard]>=0.32,<1",
+]
+
+[dependency-groups]
+dev = ["pytest>=8.3,<9", "pytest-asyncio>=0.24,<1"]
+
+[project.scripts]
+waba = "whatsapp_ghost.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/whatsapp_ghost"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
