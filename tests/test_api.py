@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -88,3 +89,46 @@ async def test_phone_tui_composes_without_a_server() -> None:
     async with phone.run_test():
         assert phone.query_one("#composer")
         assert "15550002001" in str(phone.query_one("#identity").render())
+
+
+def test_multi_business_conversations_and_read_ticks(tmp_path: Path) -> None:
+    app = create_app(replace(make_settings(tmp_path), status_delay_seconds=60))
+    headers = {"Authorization": "Bearer token"}
+    with TestClient(app) as client:
+        created = client.post("/_sandbox/businesses", json={
+            "name": "Second Business", "verified_name": "Second Sender", "display_phone_number": "15550009999",
+        }).json()
+        second_phone = created["phone_number_id"]
+
+        first = client.post("/_sandbox/phones/15550002001/messages", json={
+            "type": "text", "text": "Hello first", "phone_number_id": "PHONE_LOCAL",
+        }).json()
+        client.post("/_sandbox/phones/15550002001/messages", json={
+            "type": "text", "text": "Hello second", "phone_number_id": second_phone,
+        })
+        first_history = client.get("/_sandbox/messages", params={"wa_id": "15550002001", "phone_number_id": "PHONE_LOCAL"}).json()["data"]
+        second_history = client.get("/_sandbox/messages", params={"wa_id": "15550002001", "phone_number_id": second_phone}).json()["data"]
+        assert [item["payload"]["text"]["body"] for item in first_history] == ["Hello first"]
+        assert [item["payload"]["text"]["body"] for item in second_history] == ["Hello second"]
+        assert len(client.get("/_sandbox/conversations", params={"wa_id": "15550002001"}).json()["data"]) == 2
+
+        marked = client.post("/v25.0/PHONE_LOCAL/messages", headers=headers, json={
+            "messaging_product": "whatsapp", "status": "read", "message_id": first["id"],
+        })
+        assert marked.json() == {"success": True}
+        assert client.get("/_sandbox/messages", params={"wa_id": "15550002001", "phone_number_id": "PHONE_LOCAL"}).json()["data"][0]["status"] == "read"
+
+        sent = client.post(f"/v25.0/{second_phone}/messages", headers=headers, json={
+            "messaging_product": "whatsapp", "to": "15550002001", "type": "text", "text": {"body": "Business reply"},
+        })
+        assert sent.status_code == 200
+        client.post(f"/_sandbox/messages/{sent.json()['messages'][0]['id']}/status", json={"status": "delivered"})
+        read = client.post("/_sandbox/phones/15550002001/read", json={"phone_number_id": second_phone}).json()
+        assert read["read"] >= 1
+        webhook_payloads = client.get("/_sandbox/webhooks").json()["data"]
+        message_statuses = [
+            status["status"]
+            for delivery in webhook_payloads
+            for status in delivery["request_body"]["entry"][0]["changes"][0]["value"].get("statuses", [])
+        ]
+        assert "read" in message_statuses

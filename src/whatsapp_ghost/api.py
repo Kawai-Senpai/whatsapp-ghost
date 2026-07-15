@@ -227,15 +227,62 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=404)
 
+    @app.post("/_sandbox/phones/{wa_id}/read")
+    async def sandbox_phone_read(wa_id: str, body: dict[str, Any] = Body(...)):
+        phone_number_id = body.get("phone_number_id")
+        if not phone_number_id:
+            return JSONResponse({"error": "phone_number_id is required"}, status_code=400)
+        unread = store.all(
+            "SELECT m.id FROM messages m JOIN conversations c ON c.id=m.conversation_id "
+            "WHERE c.user_wa_id=? AND c.phone_number_id=? AND m.direction='outbound' "
+            "AND m.status='delivered' ORDER BY m.created_at",
+            (normalize_phone(wa_id), phone_number_id),
+        )
+        for message in unread:
+            await engine.set_status(message["id"], "read")
+        return {"success": True, "read": len(unread)}
+
     @app.get("/_sandbox/messages")
-    def sandbox_messages(wa_id: str | None = None, limit: int = Query(100, ge=1, le=500)):
-        if wa_id:
+    def sandbox_messages(
+        wa_id: str | None = None,
+        phone_number_id: str | None = None,
+        limit: int = Query(100, ge=1, le=500),
+    ):
+        if wa_id and phone_number_id:
+            result = store.all(
+                "SELECT m.* FROM messages m JOIN conversations c ON c.id=m.conversation_id "
+                "WHERE c.user_wa_id=? AND c.phone_number_id=? ORDER BY m.created_at DESC LIMIT ?",
+                (normalize_phone(wa_id), phone_number_id, limit),
+            )
+        elif wa_id:
             result = store.all("SELECT * FROM messages WHERE sender_id=? OR recipient_id=? ORDER BY created_at DESC LIMIT ?", (normalize_phone(wa_id), normalize_phone(wa_id), limit))
         else:
             result = store.all("SELECT * FROM messages ORDER BY created_at DESC LIMIT ?", (limit,))
         data = rows(result)
         for item in data:
             item["payload"] = json.loads(item.pop("payload_json"))
+        return {"data": data}
+
+    @app.get("/_sandbox/conversations")
+    def sandbox_conversations(wa_id: str | None = None, phone_number_id: str | None = None):
+        clauses: list[str] = []
+        values: list[Any] = []
+        if wa_id:
+            clauses.append("c.user_wa_id=?")
+            values.append(normalize_phone(wa_id))
+        if phone_number_id:
+            clauses.append("c.phone_number_id=?")
+            values.append(phone_number_id)
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        data = rows(store.all(
+            "SELECT c.*,p.display_phone_number,p.verified_name,b.name AS business_name "
+            "FROM conversations c JOIN phone_numbers p ON p.id=c.phone_number_id "
+            "JOIN business_accounts b ON b.id=p.waba_id" + where + " ORDER BY c.created_at DESC",
+            tuple(values),
+        ))
+        now = store.now().isoformat()
+        for item in data:
+            item["service_window_open"] = bool(item["service_window_expires_at"] and now < item["service_window_expires_at"])
         return {"data": data}
 
     @app.post("/_sandbox/messages/{message_id}/status")
@@ -250,7 +297,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         data = rows(store.all("SELECT * FROM webhook_deliveries ORDER BY created_at DESC"))
         for item in data:
             item["request_body"] = json.loads(bytes(item["request_body"]))
+            if isinstance(item.get("last_response_body"), bytes):
+                item["last_response_body"] = item["last_response_body"].decode("utf-8", errors="replace")
+            item["attempts"] = rows(store.all(
+                "SELECT * FROM webhook_attempts WHERE delivery_id=? ORDER BY attempt_number",
+                (item["id"],),
+            ))
+            for attempt in item["attempts"]:
+                if isinstance(attempt.get("response_body"), bytes):
+                    attempt["response_body"] = attempt["response_body"].decode("utf-8", errors="replace")
         return {"data": data}
+
+    @app.get("/_sandbox/webhook-subscriptions")
+    def sandbox_webhook_subscriptions():
+        return {"data": rows(store.all(
+            "SELECT s.*,b.name AS business_name,a.name AS app_name FROM webhook_subscriptions s "
+            "LEFT JOIN business_accounts b ON b.id=s.waba_id "
+            "LEFT JOIN developer_apps a ON a.id=s.app_id ORDER BY s.created_at DESC"
+        ))}
 
     @app.post("/_sandbox/webhooks/{delivery_id}/replay")
     async def webhook_replay(delivery_id: str):

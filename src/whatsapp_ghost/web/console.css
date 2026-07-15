@@ -67,7 +67,7 @@ code{font:12px/1.5 ui-monospace,SFMono-Regular,"SF Mono",Consolas,monospace}
   display:flex;align-items:center;gap:12px;width:100%;border:0;background:transparent;
   padding:9px 10px;border-radius:6px;text-align:left;color:var(--ink);font-weight:500;margin:1px 0
 }
-.side-link .ico{width:20px;height:20px;color:var(--muted);flex:0 0 auto}
+.side-link .ico{display:block;width:20px;height:20px;color:var(--muted);flex:0 0 20px;overflow:visible}
 svg.ico{width:20px;height:20px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
 .icon-sprite{position:absolute;width:0;height:0;overflow:hidden}
 .side-link:hover{background:var(--hover)}
@@ -180,3 +180,17 @@ textarea.field{min-height:88px;resize:vertical}
   .metabar .search{display:none}
   .form-row{grid-template-columns:1fr}
 }
+
+/* ---- Resource hierarchy and webhook history ---- */
+.hierarchy-strip{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:14px 16px;margin-bottom:12px;background:#f7f9fc;border:1px solid #d8e1ed;border-radius:var(--radius)}
+.hierarchy-strip span{padding:7px 10px;background:#fff;border:1px solid var(--line);border-radius:6px;font-weight:600}.hierarchy-strip i{font-style:normal;color:var(--fb-blue);font-weight:800}
+.info-callout{padding:13px 15px;margin-bottom:16px;border-left:4px solid var(--fb-blue);background:#edf5ff;color:#344054;border-radius:4px}.info-callout b{display:block;color:var(--ink);margin-bottom:2px}
+.resource-path{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:12px 0}.resource-path div{background:var(--meta-bg);padding:9px 10px;border-radius:6px;min-width:0}.resource-path small,.resource-path code{display:block}.resource-path small{color:var(--muted);font-size:11px}.resource-path code{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px}
+.hook-summary{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px}.hook-summary>div{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:14px 16px;box-shadow:var(--shadow)}.hook-summary small,.hook-summary b{display:block}.hook-summary small{color:var(--muted)}.hook-summary b{font-size:24px;margin-top:4px}
+.subscriptions-card{margin-bottom:14px}.subscription-row{display:flex;align-items:center;gap:10px;padding:9px 0;border-top:1px solid var(--line-soft)}.subscription-row:first-child{border-top:0}.subscription-row .grow{min-width:0}.subscription-row small{display:block;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hook-toolbar{display:flex;gap:10px;margin:18px 0 12px}.hook-toolbar select{max-width:190px}.hook-toolbar input{max-width:440px}
+.event-meta{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:12px 0}.event-meta>div{background:var(--meta-bg);border-radius:6px;padding:8px 10px;min-width:0}.event-meta small,.event-meta b{display:block}.event-meta small{color:var(--muted);font-size:11px}.event-meta b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}
+.json-view{background:#0d1117;color:#c9d1d9;border-radius:8px;padding:14px;max-height:430px;overflow:auto;white-space:pre-wrap;word-break:break-word;font:12px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace}.json-key{color:#79c0ff}.json-string{color:#a5d6ff}.json-number{color:#d2a8ff}.json-boolean{color:#ff7b72}.json-null{color:#8b949e}.event-error{background:#fff1f1;color:#9f1c23;border-radius:6px;padding:9px 11px;margin-top:8px;white-space:pre-wrap}.event-response{margin-top:8px}
+.badge.red{background:#ffebec;color:#b4232a}
+.attempt-list{border:1px solid var(--line);border-radius:8px;overflow:hidden}.attempt-row{display:grid;grid-template-columns:auto 1fr;gap:10px;padding:10px 12px;border-top:1px solid var(--line-soft)}.attempt-row:first-child{border-top:0}.attempt-row small{display:block;color:var(--muted)}.attempt-row pre{margin:6px 0 0;padding:7px;background:var(--meta-bg);white-space:pre-wrap;border-radius:4px}
+@media(max-width:760px){.hook-summary{grid-template-columns:1fr 1fr}.event-meta,.resource-path{grid-template-columns:1fr}.hook-toolbar{flex-direction:column}.hook-toolbar select,.hook-toolbar input{max-width:none}}

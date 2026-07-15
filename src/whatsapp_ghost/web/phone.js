@@ -4,7 +4,7 @@ const state = {
   config:{}, businesses:[], users:[],
   wa: params.get('phone') || '',      // the simulated customer (us)
   activePhone: params.get('business') || '',  // business phone_number_id we're chatting with
-  socket:null, reconnect:null,
+  socket:null, reconnect:null, reading:false,
 };
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -42,11 +42,22 @@ function messageText(m){
 }
 
 function ticks(status){
-  if(status==='read')      return '<span class="ticks read">✓✓</span>';
-  if(status==='delivered') return '<span class="ticks">✓✓</span>';
-  if(status==='sent')      return '<span class="ticks">✓</span>';
+  if(status==='read')      return '<span class="ticks read" title="Read">&#10003;&#10003;</span>';
+  if(status==='delivered') return '<span class="ticks" title="Delivered">&#10003;&#10003;</span>';
+  if(status==='sent')      return '<span class="ticks" title="Sent">&#10003;</span>';
   if(status==='failed')    return '<span class="ticks" style="color:#e5484d">!</span>';
   return '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-1px"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>';
+}
+
+function jsonHtml(value){
+  const safe = esc(JSON.stringify(value,null,2));
+  return safe.replace(/(&quot;(?:\\u[a-fA-F0-9]{4}|\\[^u]|[^\\&])*&quot;)(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d+)?(?:[eE][+\-]?\d+)?/g, match=>{
+    let cls='json-number';
+    if(/^&quot;/.test(match)) cls=/:$/.test(match)?'json-key':'json-string';
+    else if(/true|false/.test(match)) cls='json-boolean';
+    else if(/null/.test(match)) cls='json-null';
+    return `<span class="${cls}">${match}</span>`;
+  });
 }
 
 /* ---- boot ---- */
@@ -106,9 +117,16 @@ function closeChat(){ $('#app').classList.remove('chat-open'); }
 
 async function loadMessages(){
   if(!state.wa){ return; }
-  const d = await req('/_sandbox/messages?wa_id='+encodeURIComponent(state.wa)+'&limit=200');
-  // messages come newest-first; reverse and keep only ones touching the active business phone
-  const all = d.data.reverse().filter(m => m.sender_id===state.activePhone || m.recipient_id===state.activePhone);
+  const d = await req('/_sandbox/messages?wa_id='+encodeURIComponent(state.wa)+'&phone_number_id='+encodeURIComponent(state.activePhone)+'&limit=200');
+  const all = d.data.reverse();
+  const unread = all.filter(m=>m.direction==='outbound' && ['accepted','sent','delivered'].includes(m.status));
+  if(unread.length && !state.reading){
+    state.reading=true;
+    try{
+      await req(`/_sandbox/phones/${encodeURIComponent(state.wa)}/read`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone_number_id:state.activePhone})});
+      unread.forEach(m=>m.status='read');
+    }finally{ state.reading=false; }
+  }
   const box = $('#messages');
   if(!all.length){
     box.innerHTML = '<div class="empty-msg">No messages yet.<br>Say hello to open the 24-hour service window.</div>';
@@ -143,7 +161,7 @@ async function loadMessages(){
     const meta = `<span class="meta">${fmtTime(m.created_at)}${mine?' '+ticks(m.status):''}</span>`;
     return `${sep}<div class="msg ${mine?'out':'in'} ${val.kind==='template'?'tpl':''}" onclick="this.classList.toggle('show-raw')">
       ${bodyHtml}${meta}
-      <div class="raw">${esc(JSON.stringify(m.payload,null,2))}</div>
+      <div class="raw json-view">${jsonHtml(m.payload)}</div>
     </div>`;
   }).join('');
   box.scrollTop = box.scrollHeight;
@@ -206,7 +224,5 @@ async function refreshMeta(){
   }catch{}
 }
 
-// poll as a fallback so status ticks + renamed businesses refresh even without a socket event
-setInterval(()=>{ if(state.activePhone) loadMessages(); }, 4000);
-setInterval(refreshMeta, 5000);
+window.addEventListener('focus', refreshMeta);
 boot();

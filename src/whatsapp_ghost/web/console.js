@@ -1,5 +1,5 @@
 /* ===== WhatsApp Ghost developer console ===== */
-const state = { config:{}, apps:[], businesses:[], users:[], messages:[] };
+const state = { config:{}, apps:[], businesses:[], users:[], messages:[], webhooks:[], subscriptions:[] };
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const initials = s => (s||'?').trim().slice(0,2).toUpperCase();
@@ -14,6 +14,16 @@ function toast(msg, bad=false){ const e=$('#toast'); e.textContent=msg; e.classL
 function copyText(v){ navigator.clipboard.writeText(v); toast('Copied to clipboard'); }
 function openModal(id){ $('#'+id).classList.add('open'); }
 function closeModal(id){ $('#'+id).classList.remove('open'); }
+function jsonHtml(value){
+  const safe=esc(JSON.stringify(value,null,2));
+  return safe.replace(/(&quot;(?:\\u[a-fA-F0-9]{4}|\\[^u]|[^\\&])*&quot;)(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d+)?(?:[eE][+\-]?\d+)?/g,match=>{
+    let cls='json-number';
+    if(/^&quot;/.test(match)) cls=/:$/.test(match)?'json-key':'json-string';
+    else if(/true|false/.test(match)) cls='json-boolean';
+    else if(/null/.test(match)) cls='json-null';
+    return `<span class="${cls}">${match}</span>`;
+  });
+}
 
 /* ---- navigation ---- */
 function goto(page){
@@ -78,15 +88,21 @@ function renderBusinesses(){
     <div class="item">
       <div class="item-head">
         <div class="avatar wa">${esc(initials(b.name))}</div>
-        <div class="grow"><b>${esc(b.name)} <span class="badge blue">WABA</span></b>
-          <small>Business ${esc(b.business_id)} · ${esc(b.id)}</small></div>
+        <div class="grow"><b>${esc(b.name)} <span class="badge blue">BUSINESS</span></b>
+          <small>${b.phone_numbers.length} registered sender${b.phone_numbers.length===1?'':'s'}</small></div>
+      </div>
+      <div class="resource-path">
+        <div><small>Business ID</small><code>${esc(b.business_id)}</code></div>
+        <div><small>WhatsApp Business Account (WABA)</small><code>${esc(b.id)}</code></div>
+        <div><small>Sender numbers</small><code>${b.phone_numbers.length}</code></div>
       </div>
       ${b.phone_numbers.map(p=>`
         <div class="subnumber">
           <div class="avatar wa" style="width:34px;height:34px;border-radius:9px"><svg class="ico" style="color:var(--green-dark)"><use href="#i-phone"/></svg></div>
           <div class="grow"><b>${esc(p.verified_name)} <span class="badge">${esc(p.quality_rating||'GREEN')}</span></b>
-            <small>+${esc(p.display_phone_number)} · ${esc(p.id)}</small></div>
-          <button class="btn secondary small" onclick='editBusiness(${JSON.stringify(b.id)},${JSON.stringify(b.name)},${JSON.stringify(p.id)},${JSON.stringify(p.verified_name)},${JSON.stringify(p.display_phone_number)})'<svg><use href="#i-edit"/></svg>Edit</button>
+            <small>Business phone +${esc(p.display_phone_number)} · Phone-number ID ${esc(p.id)}</small></div>
+          <button class="btn wa small" onclick="openPhoneForBusiness('${esc(p.id)}')"><svg><use href="#i-open"/></svg>Test chat</button>
+          <button class="btn secondary small" onclick='editBusiness(${JSON.stringify(b.id)},${JSON.stringify(b.name)},${JSON.stringify(p.id)},${JSON.stringify(p.verified_name)},${JSON.stringify(p.display_phone_number)})'><svg><use href="#i-edit"/></svg>Edit</button>
         </div>`).join('')}
     </div>`).join('') || '<div class="empty">No businesses yet. Add one to register a sender number.</div>';
 }
@@ -128,19 +144,39 @@ async function loadTemplates(){
     </div>`).join('') || '<div class="empty">No templates yet.</div>';
 }
 async function loadWebhooks(){
-  const d = await req('/_sandbox/webhooks');
-  $('#webhook-list').innerHTML = d.data.map(w=>`
-    <div class="item"><div class="item-head">
-      <div class="avatar"><svg class="ico" style="color:var(--fb-blue)"><use href="#i-webhook"/></svg></div>
-      <div class="grow"><b>${esc(w.event_type)} <span class="badge ${w.status==='delivered'?'':'amber'}">${esc(w.status)}</span></b>
-        <small>${esc(w.destination_url||'No subscription configured')} · ${esc(w.id)}</small></div>
-      ${w.destination_url?`<button class="btn secondary small" onclick="replay('${esc(w.id)}')">Replay</button>`:''}
-    </div>
-      <details style="margin-top:10px"><summary style="cursor:pointer;color:var(--muted)">Raw payload &amp; signature</summary>
-        <div class="endpoint" style="margin-top:8px">${esc(JSON.stringify(w.request_body,null,2))}</div>
-        <div class="secret"><code>${esc(w.signature)}</code></div></details>
-    </div>`).join('') || '<div class="empty">Events appear here as messages and statuses are created.</div>';
+  const [events,subscriptions] = await Promise.all([req('/_sandbox/webhooks'),req('/_sandbox/webhook-subscriptions')]);
+  state.webhooks=events.data; state.subscriptions=subscriptions.data;
+  $('#wh-subscriptions').textContent=state.subscriptions.filter(s=>s.active).length;
+  $('#wh-total').textContent=state.webhooks.length;
+  $('#wh-delivered').textContent=state.webhooks.filter(w=>w.status==='delivered').length;
+  $('#wh-failed').textContent=state.webhooks.filter(w=>w.status==='failed'||w.status==='unrouted').length;
+  $('#subscription-list').innerHTML=state.subscriptions.filter(s=>s.active).map(s=>`
+    <div class="subscription-row"><span class="badge">ACTIVE</span><div class="grow"><b>${esc(s.business_name||s.waba_id)}</b><small>${esc(s.callback_url)} · ${esc(s.app_name||s.app_id||'Local app')}</small></div><code>${esc(s.waba_id)}</code></div>`).join('')||'<div class="empty">No callback is subscribed. Unrouted events are still retained in history.</div>';
+  renderWebhookHistory();
 }
+function renderWebhookHistory(){
+  const filter=$('#hook-filter')?.value||'all', query=($('#hook-search')?.value||'').toLowerCase();
+  const items=state.webhooks.filter(w=>(filter==='all'||w.status===filter)&&(!query||JSON.stringify(w).toLowerCase().includes(query)));
+  $('#webhook-list').innerHTML=items.map(w=>{
+    const payload=w.request_body||{}, change=payload.entry?.[0]?.changes?.[0], value=change?.value||{};
+    const content=value.messages?.[0] ? `Inbound ${value.messages[0].type||'message'}` : value.statuses?.[0] ? `Status: ${value.statuses[0].status}` : w.event_type;
+    const waba=payload.entry?.[0]?.id||'—', phone=value.metadata?.phone_number_id||'—';
+    const badge=w.status==='delivered'?'':w.status==='failed'?'red':'amber';
+    const attempts=(w.attempts||[]).map(a=>`<div class="attempt-row"><span class="badge ${a.error?'red':''}">#${a.attempt_number}</span><div><b>${a.status_code??'Network error'}</b><small>${new Date(a.requested_at).toLocaleString()}${a.completed_at?' → '+new Date(a.completed_at).toLocaleTimeString():''}</small>${a.error?`<div class="event-error">${esc(a.error)}</div>`:''}${a.response_body?`<pre>${esc(a.response_body)}</pre>`:''}</div></div>`).join('')||'<div class="empty">No network attempt was made because the event was unrouted.</div>';
+    return `<div class="item"><div class="item-head">
+      <div class="avatar"><svg class="ico" style="color:var(--fb-blue)"><use href="#i-webhook"/></svg></div>
+      <div class="grow"><b>${esc(content)} <span class="badge ${badge}">${esc(w.status.toUpperCase())}</span></b><small>${new Date(w.created_at).toLocaleString()} · ${esc(w.id)}</small></div>
+      <button class="btn secondary small" onclick="copyWebhook('${esc(w.id)}')">Copy JSON</button>${w.destination_url?`<button class="btn secondary small" onclick="replay('${esc(w.id)}')">Replay</button>`:''}</div>
+      <div class="event-meta"><div><small>WABA</small><b>${esc(waba)}</b></div><div><small>Phone-number ID</small><b>${esc(phone)}</b></div><div><small>Attempts / HTTP</small><b>${w.attempt_count} / ${esc(w.last_status_code??'—')}</b></div><div><small>Destination</small><b title="${esc(w.destination_url||'Unrouted')}">${esc(w.destination_url||'Unrouted')}</b></div></div>
+      <details><summary style="cursor:pointer;color:var(--fb-blue);font-weight:600">View formatted request JSON, signature and response</summary>
+        <div class="field-label">Request body</div><div class="json-view">${jsonHtml(payload)}</div>
+        <div class="field-label">X-Hub-Signature-256</div><div class="secret"><code>${esc(w.signature)}</code><button class="btn secondary small" onclick="copyText('${esc(w.signature)}')">Copy</button></div>
+        <div class="field-label">Delivery attempt history</div><div class="attempt-list">${attempts}</div>
+        ${w.last_error?`<div class="event-error">${esc(w.last_error)}</div>`:''}${w.last_response_body?`<div class="event-response json-view">${esc(w.last_response_body)}</div>`:''}
+      </details></div>`;
+  }).join('')||'<div class="empty">No webhook history matches this filter.</div>';
+}
+function copyWebhook(id){const item=state.webhooks.find(w=>w.id===id);if(item)copyText(JSON.stringify(item.request_body,null,2));}
 
 /* ---- actions ---- */
 async function createApp(e){ e.preventDefault();
@@ -198,6 +234,11 @@ function openPhoneTab(){
 function openPhoneTabFor(wa){
   const biz = state.businesses[0]?.phone_numbers[0]?.id || '';
   window.open(phoneUrl(wa,biz),'ghost-phone-'+wa);
+}
+function openPhoneForBusiness(phoneId){
+  const wa=state.users[0]?.wa_id;
+  if(!wa){ toast('Create a test customer first',true); goto('simulator'); return; }
+  window.open(phoneUrl(wa,phoneId),'ghost-phone-'+wa+'-'+phoneId);
 }
 
 /* ---- modal backdrop close + boot ---- */

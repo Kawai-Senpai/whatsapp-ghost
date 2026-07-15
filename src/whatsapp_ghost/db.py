@@ -62,7 +62,12 @@ CREATE TABLE IF NOT EXISTS webhook_deliveries (
   id TEXT PRIMARY KEY, event_type TEXT NOT NULL, destination_url TEXT,
   request_body BLOB NOT NULL, signature TEXT NOT NULL, status TEXT NOT NULL,
   attempt_count INTEGER NOT NULL DEFAULT 0, last_status_code INTEGER,
-  last_error TEXT, created_at TEXT NOT NULL, delivered_at TEXT
+  last_response_body BLOB, last_error TEXT, created_at TEXT NOT NULL, delivered_at TEXT
+);
+CREATE TABLE IF NOT EXISTS webhook_attempts (
+  id TEXT PRIMARY KEY, delivery_id TEXT NOT NULL, attempt_number INTEGER NOT NULL,
+  requested_at TEXT NOT NULL, completed_at TEXT, status_code INTEGER,
+  response_body BLOB, error TEXT
 );
 CREATE TABLE IF NOT EXISTS clock_state (
   singleton INTEGER PRIMARY KEY CHECK(singleton=1), frozen_at TEXT
@@ -94,6 +99,9 @@ class Store:
             for column in ("app_id", "app_secret", "verify_token"):
                 if column not in subscription_columns:
                     db.execute(f"ALTER TABLE webhook_subscriptions ADD COLUMN {column} TEXT")
+            delivery_columns = {row[1] for row in db.execute("PRAGMA table_info(webhook_deliveries)")}
+            if "last_response_body" not in delivery_columns:
+                db.execute("ALTER TABLE webhook_deliveries ADD COLUMN last_response_body BLOB")
             now = datetime.now(timezone.utc).isoformat()
             db.execute("INSERT OR IGNORE INTO business_accounts VALUES(?,?,?,?)", ("WABA_LOCAL", "BUSINESS_LOCAL", "Ghost Demo Business", now))
             db.execute(

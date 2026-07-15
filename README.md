@@ -90,7 +90,7 @@ Invoke-RestMethod -Method Post `
   -Headers $headers -ContentType application/json -Body $body
 ```
 
-The response contains a `wamid.*` ID. The message progresses through `accepted → sent → delivered`; the simulated phone displays it and can generate desktop or terminal-bell notifications.
+The response contains a `wamid.*` ID. The message progresses through `accepted → sent → delivered → read`; opening the conversation in a simulated phone marks delivered business messages read and emits the corresponding status webhook. Customer-side bubbles show single, double-grey, double-blue, and failure indicators from the stored status.
 
 Outside the service window, the seeded approved template works:
 
@@ -125,7 +125,7 @@ Invoke-RestMethod -Method Post `
   -Body '{"callback_url":"http://127.0.0.1:9000/webhook"}'
 ```
 
-Webhook bodies use the documented `whatsapp_business_account → entry → changes → value` envelope. `X-Hub-Signature-256` is an HMAC-SHA256 digest of the exact raw body using `local-app-secret`. Every event is stored before delivery. Inspect and replay deliveries with `uv run ghost.py webhooks list`.
+Webhook bodies use the documented `whatsapp_business_account → entry → changes → value` envelope. `X-Hub-Signature-256` is an HMAC-SHA256 digest of the exact raw body using `local-app-secret`. Every event is stored before delivery. The web inspector retains every replay attempt with timestamps, HTTP status, response/error, destination, signature, and syntax-highlighted request JSON. Inspect from the console or with `uv run ghost.py webhooks list`.
 
 The standard verification endpoint is `GET /webhook` with `hub.mode`, `hub.verify_token`, and `hub.challenge` parameters.
 
@@ -163,7 +163,7 @@ uv run ghost.py phone create 15550002002 --name Alice
 uv run ghost.py phone spawn 15550002002
 ```
 
-Each inbound message resets that customer/business pair's window. `spawn` opens another terminal on Windows; `open` runs in the current terminal.
+Each inbound message resets only that customer/business-phone pair's window. One simulated customer can independently chat with every configured business: choose a business in the dedicated `/phone` tab, and the first message creates that conversation, emits the correct WABA webhook, and opens its 24-hour window. `spawn` opens another terminal on Windows; `open` runs in the current terminal.
 
 ## Modes and configuration
 

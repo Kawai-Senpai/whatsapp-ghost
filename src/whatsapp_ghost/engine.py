@@ -137,6 +137,8 @@ class Engine:
         event_id = "evt_" + uuid.uuid4().hex
         self.store.execute("INSERT INTO message_status_events VALUES(?,?,?,?,?)", (event_id, message_id, status, now.isoformat(), json.dumps(status_payload)))
         await self.queue_webhook(message["sender_id"], "messages", statuses=[status_payload])
+        if message["direction"] == "outbound":
+            await self.broadcast(message["recipient_id"], {"event": "status", "message_id": message_id, "status": status})
 
     async def receive_inbound(self, phone_id: str, wa_id: str, message_type: str, payload: dict[str, Any]) -> dict[str, Any]:
         wa_id = normalize_phone(wa_id)
@@ -150,7 +152,7 @@ class Engine:
         normalized = {"from": wa_id, "id": message_id, "timestamp": str(int(now.timestamp())), "type": message_type, message_type: payload}
         self.store.execute(
             "INSERT INTO messages VALUES(?,?,?,?,?,?,?,?,?,?,?,NULL)",
-            (message_id, conversation_id, "inbound", wa_id, phone_id, message_type, json.dumps(normalized), "v25.0", "received", now.isoformat(), now.isoformat()),
+            (message_id, conversation_id, "inbound", wa_id, phone_id, message_type, json.dumps(normalized), "v25.0", "delivered", now.isoformat(), now.isoformat()),
         )
         self.store.execute("UPDATE conversations SET last_user_message_at=?,service_window_expires_at=? WHERE id=?", (now.isoformat(), expires.isoformat(), conversation_id))
         await self.queue_webhook(phone_id, "messages", contacts=[{"profile": {"name": self.user(wa_id)["display_name"]}, "wa_id": wa_id}], messages=[normalized])
@@ -171,12 +173,18 @@ class Engine:
         subscriptions = self.store.all("SELECT * FROM webhook_subscriptions WHERE waba_id=? AND active=1", (phone["waba_id"],))
         if not subscriptions:
             signature = "sha256=" + hmac.new(self.settings.app_secret.encode(), body, hashlib.sha256).hexdigest()
-            self.store.execute("INSERT INTO webhook_deliveries VALUES(?,?,?,?,?,?,?,?,?,?,?)", ("whd_" + uuid.uuid4().hex, field, None, body, signature, "unrouted", 0, None, None, self.store.now().isoformat(), None))
+            self.store.execute(
+                "INSERT INTO webhook_deliveries(id,event_type,destination_url,request_body,signature,status,attempt_count,last_status_code,last_error,created_at,delivered_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                ("whd_" + uuid.uuid4().hex, field, None, body, signature, "unrouted", 0, None, None, self.store.now().isoformat(), None),
+            )
         for subscription in subscriptions:
             signing_secret = subscription["app_secret"] or self.settings.app_secret
             signature = "sha256=" + hmac.new(signing_secret.encode(), body, hashlib.sha256).hexdigest()
             delivery_id = "whd_" + uuid.uuid4().hex
-            self.store.execute("INSERT INTO webhook_deliveries VALUES(?,?,?,?,?,?,?,?,?,?,?)", (delivery_id, field, subscription["callback_url"], body, signature, "pending", 0, None, None, self.store.now().isoformat(), None))
+            self.store.execute(
+                "INSERT INTO webhook_deliveries(id,event_type,destination_url,request_body,signature,status,attempt_count,last_status_code,last_error,created_at,delivered_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                (delivery_id, field, subscription["callback_url"], body, signature, "pending", 0, None, None, self.store.now().isoformat(), None),
+            )
             asyncio.create_task(self.deliver_webhook(delivery_id))
 
     async def deliver_webhook(self, delivery_id: str) -> None:
@@ -184,13 +192,28 @@ class Engine:
         if not delivery or not delivery["destination_url"]:
             return
         attempts = delivery["attempt_count"] + 1
+        attempt_id = "wha_" + uuid.uuid4().hex
+        requested_at = self.store.now().isoformat()
+        self.store.execute(
+            "INSERT INTO webhook_attempts(id,delivery_id,attempt_number,requested_at) VALUES(?,?,?,?)",
+            (attempt_id, delivery_id, attempts, requested_at),
+        )
         try:
             async with httpx.AsyncClient(timeout=10) as client:
                 response = await client.post(delivery["destination_url"], content=delivery["request_body"], headers={"Content-Type": "application/json", "X-Hub-Signature-256": delivery["signature"]})
             status = "delivered" if 200 <= response.status_code < 300 else "failed"
-            self.store.execute("UPDATE webhook_deliveries SET status=?,attempt_count=?,last_status_code=?,last_error=?,delivered_at=? WHERE id=?", (status, attempts, response.status_code, None if status == "delivered" else response.text[:1000], self.store.now().isoformat() if status == "delivered" else None, delivery_id))
+            completed_at = self.store.now().isoformat()
+            self.store.execute("UPDATE webhook_deliveries SET status=?,attempt_count=?,last_status_code=?,last_response_body=?,last_error=?,delivered_at=? WHERE id=?", (status, attempts, response.status_code, response.content, None if status == "delivered" else response.text[:1000], completed_at if status == "delivered" else None, delivery_id))
+            self.store.execute(
+                "UPDATE webhook_attempts SET completed_at=?,status_code=?,response_body=? WHERE id=?",
+                (completed_at, response.status_code, response.content, attempt_id),
+            )
         except Exception as exc:
             self.store.execute("UPDATE webhook_deliveries SET status='failed',attempt_count=?,last_error=? WHERE id=?", (attempts, str(exc), delivery_id))
+            self.store.execute(
+                "UPDATE webhook_attempts SET completed_at=?,error=? WHERE id=?",
+                (self.store.now().isoformat(), str(exc), attempt_id),
+            )
 
     async def broadcast(self, wa_id: str, payload: dict[str, Any]) -> None:
         dead = []
