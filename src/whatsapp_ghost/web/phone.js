@@ -46,7 +46,7 @@ function ticks(status){
   if(status==='delivered') return '<span class="ticks">✓✓</span>';
   if(status==='sent')      return '<span class="ticks">✓</span>';
   if(status==='failed')    return '<span class="ticks" style="color:#e5484d">!</span>';
-  return '<span class="ticks" style="letter-spacing:0">⏱</span>';
+  return '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-1px"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>';
 }
 
 /* ---- boot ---- */

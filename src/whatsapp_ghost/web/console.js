@@ -60,7 +60,7 @@ function renderApps(){
   $('#app-list').innerHTML = state.apps.map(a=>`
     <div class="item">
       <div class="item-head">
-        <div class="avatar">🔑</div>
+        <div class="avatar"><svg class="ico" style="color:var(--fb-blue)"><use href="#i-key"/></svg></div>
         <div class="grow"><b>${esc(a.name)} <span class="badge">ACTIVE</span></b>
           <small>${esc(a.id)} · created ${new Date(a.created_at).toLocaleString()}</small></div>
         <button class="btn secondary small" onclick="rotateToken('${esc(a.id)}')">Rotate token</button>
@@ -83,10 +83,10 @@ function renderBusinesses(){
       </div>
       ${b.phone_numbers.map(p=>`
         <div class="subnumber">
-          <div class="avatar wa" style="width:34px;height:34px;border-radius:9px">☎</div>
+          <div class="avatar wa" style="width:34px;height:34px;border-radius:9px"><svg class="ico" style="color:var(--green-dark)"><use href="#i-phone"/></svg></div>
           <div class="grow"><b>${esc(p.verified_name)} <span class="badge">${esc(p.quality_rating||'GREEN')}</span></b>
             <small>+${esc(p.display_phone_number)} · ${esc(p.id)}</small></div>
-          <button class="btn secondary small" onclick='editBusiness(${JSON.stringify(b.id)},${JSON.stringify(b.name)},${JSON.stringify(p.id)},${JSON.stringify(p.verified_name)},${JSON.stringify(p.display_phone_number)})'>✎ Edit</button>
+          <button class="btn secondary small" onclick='editBusiness(${JSON.stringify(b.id)},${JSON.stringify(b.name)},${JSON.stringify(p.id)},${JSON.stringify(p.verified_name)},${JSON.stringify(p.display_phone_number)})'<svg><use href="#i-edit"/></svg>Edit</button>
         </div>`).join('')}
     </div>`).join('') || '<div class="empty">No businesses yet. Add one to register a sender number.</div>';
 }
@@ -121,7 +121,7 @@ async function loadTemplates(){
   }
   $('#template-list').innerHTML = all.map(t=>`
     <div class="item"><div class="item-head">
-      <div class="avatar">▤</div>
+      <div class="avatar"><svg class="ico" style="color:var(--fb-blue)"><use href="#i-template"/></svg></div>
       <div class="grow"><b>${esc(t.name)} <span class="badge">${esc(t.status)}</span></b>
         <small>${esc(t.language)} · ${esc(t.category)} · ${esc(t._waba)}</small></div></div>
       <div style="margin-top:10px;color:var(--muted)">${esc(t.components?.find(c=>c.type==='BODY')?.text||'')}</div>
@@ -131,7 +131,7 @@ async function loadWebhooks(){
   const d = await req('/_sandbox/webhooks');
   $('#webhook-list').innerHTML = d.data.map(w=>`
     <div class="item"><div class="item-head">
-      <div class="avatar">↯</div>
+      <div class="avatar"><svg class="ico" style="color:var(--fb-blue)"><use href="#i-webhook"/></svg></div>
       <div class="grow"><b>${esc(w.event_type)} <span class="badge ${w.status==='delivered'?'':'amber'}">${esc(w.status)}</span></b>
         <small>${esc(w.destination_url||'No subscription configured')} · ${esc(w.id)}</small></div>
       ${w.destination_url?`<button class="btn secondary small" onclick="replay('${esc(w.id)}')">Replay</button>`:''}
