@@ -1,14 +1,55 @@
-# WhatsApp Ghost
+<div align="center">
 
-WhatsApp Ghost is a local, persistent sandbox that imitates the documented WhatsApp Cloud API contracts developers commonly integrate with. Change only the hostname in your application:
+# 👻 WhatsApp Ghost
+
+**A persistent local sandbox for the WhatsApp Cloud API**
+
+Build, test, and debug WhatsApp integrations without contacting real users or waiting on external services.
+
+[![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.115%2B-009688?style=flat-square&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-22C55E?style=flat-square)](pyproject.toml)
+[![API: v25.0](https://img.shields.io/badge/Cloud_API-v25.0-25D366?style=flat-square)](contracts/v25.0/README.md)
+
+[Quick start](#quick-start) · [Connect your app](#connect-your-app) · [Webhooks](#webhooks) · [Configuration](#configuration) · [Development](#development)
+
+</div>
+
+---
+
+WhatsApp Ghost imitates the documented WhatsApp Cloud API contracts that developers commonly integrate with. Change only the hostname in your application:
 
 ```text
 https://graph.facebook.com  →  http://127.0.0.1:8787
 ```
 
-It is not WhatsApp, does not connect to WhatsApp users, and does not implement Meta's private protocols. It gives you reproducible local behavior for messages, templates, media, webhooks, simulated customer phones, delivery states, and the 24-hour customer-service window.
+> [!IMPORTANT]
+> WhatsApp Ghost is an independent development tool. It is not WhatsApp, does not connect to WhatsApp users, and does not implement Meta's private protocols.
 
-## Start in two commands
+## ✨ What you get
+
+| | Capability | What it lets you test |
+|:--:|---|---|
+| 💬 | **Messages** | Text, media, templates, replies, and realistic `wamid` values |
+| 📱 | **Phone simulators** | Customer conversations in the browser or terminal |
+| 🪝 | **Webhooks** | Signed payloads, delivery history, inspection, and replay |
+| ✅ | **Delivery lifecycle** | `sent`, `delivered`, `read`, and `failed` status transitions |
+| 🧩 | **Accounts and senders** | Local apps, WABAs, tokens, and multiple business numbers |
+| ⏰ | **Time travel** | Test the 24-hour customer-service window in seconds |
+| 💾 | **Persistent state** | Shared SQLite state across the API, console, and phones |
+| 🎛️ | **Testing modes** | Strict and loose validation for different integration stages |
+
+```mermaid
+flowchart LR
+    A[Your application] -->|Cloud API requests| G[👻 WhatsApp Ghost]
+    P[📱 Simulated customer] <-->|Messages| G
+    G -->|Signed events| W[Your webhook]
+    G --- D[(SQLite state)]
+```
+
+<a id="quick-start"></a>
+
+## 🚀 Quick start
 
 Install [uv](https://docs.astral.sh/uv/) and run this from the project folder:
 
@@ -17,13 +58,25 @@ uv sync
 uv run ghost.py start
 ```
 
-No configuration is required. Open [http://127.0.0.1:8787](http://127.0.0.1:8787) for the visual developer console. It provides local app/token creation, WABA and sender setup, template management, webhook inspection, time travel, and a browser phone simulator. The step-by-step guide with live, copyable examples is at [http://127.0.0.1:8787/guide](http://127.0.0.1:8787/guide), and the interactive API reference is at [http://127.0.0.1:8787/docs](http://127.0.0.1:8787/docs). Then open another terminal for the Textual phone:
+No configuration is required. Once the server is running, choose an interface:
+
+| Destination | URL | Purpose |
+|---|---|---|
+| Developer console | [localhost:8787](http://127.0.0.1:8787) | Manage local apps, WABAs, senders, templates, webhooks, and time |
+| Integration guide | [localhost:8787/guide](http://127.0.0.1:8787/guide) | Follow live, copyable examples |
+| API reference | [localhost:8787/docs](http://127.0.0.1:8787/docs) | Explore and call the API interactively |
+| Phone simulator | [localhost:8787/phone](http://127.0.0.1:8787/phone) | Chat as a simulated customer |
+
+Or open the Textual phone in another terminal:
 
 ```powershell
 uv run ghost.py phone open 15550002001
 ```
 
-The initial local identities are:
+<details>
+<summary><strong>Default local identities</strong></summary>
+
+<br>
 
 | Resource | Value |
 |---|---|
@@ -37,11 +90,15 @@ The initial local identities are:
 | Simulated customer | `15550002001` |
 | API version used in examples | `v25.0` |
 
+</details>
+
 Run `uv run ghost.py doctor` if startup does not work. An installed `waba` command is also provided, but `ghost.py` works on Windows machines whose application-control policy blocks generated command launchers.
 
 The web console and terminal phone share the same SQLite state, so a conversation started in either interface appears in both. The visual language is WhatsApp-inspired and internally branded as Ghost; it is intentionally not a copy of Meta's site or trademarks.
 
-## Connect an existing project
+<a id="connect-your-app"></a>
+
+## 🔌 Connect your app
 
 Keep your existing Cloud API code and change its configuration:
 
@@ -75,7 +132,7 @@ GET /v25.0/{WABA_ID}/phone_numbers
 
 Choose the sender by placing its phone-number ID in the message URL: `POST /v25.0/{PHONE_NUMBER_ID}/messages`. There is no `from` field. Templates and webhook subscription are shared at WABA scope; sender identity, message history, ticks, and the 24-hour window are isolated for each sender/customer pair. Ghost does not impose Meta account-tier number quotas on local test rows.
 
-## Your first complete conversation
+## 🧪 Your first complete conversation
 
 The sandbox starts in strict mode. Like the real platform, a free-form business message is rejected until the customer has opened the 24-hour service window. Send a customer message from the Textual phone, or use:
 
@@ -117,7 +174,9 @@ Outside the service window, the seeded approved template works:
 }
 ```
 
-## Webhooks
+<a id="webhooks"></a>
+
+## 🪝 Webhooks
 
 Run the included receiver in a separate terminal:
 
@@ -139,7 +198,7 @@ Webhook bodies use the documented `whatsapp_business_account → entry → chang
 
 The standard verification endpoint is `GET /webhook` with `hub.mode`, `hub.verify_token`, and `hub.challenge` parameters.
 
-## Media and templates
+## 🖼️ Media and templates
 
 Supported media flow:
 
@@ -162,7 +221,7 @@ DELETE /v25.0/{waba-id}/message_templates?name={name}
 
 New local templates auto-approve. Send `"_sandbox_auto_approve": false` during creation to test `PENDING`; that underscore-prefixed field is a simulator extension.
 
-## Time travel and multiple phones
+## ⏱️ Time travel and multiple phones
 
 ```powershell
 uv run ghost.py clock show
@@ -175,7 +234,9 @@ uv run ghost.py phone spawn 15550002002
 
 Each inbound message resets only that customer/business-phone pair's window. One simulated customer can independently chat with every configured business: choose a business in the dedicated `/phone` tab, and the first message creates that conversation, emits the correct WABA webhook, and opens its 24-hour window. `spawn` opens another terminal on Windows; `open` runs in the current terminal.
 
-## Modes and configuration
+<a id="configuration"></a>
+
+## ⚙️ Modes and configuration
 
 Defaults work immediately. `.env` is loaded automatically; `.env.example` documents the settings:
 
@@ -192,19 +253,22 @@ Defaults work immediately. `.env` is loaded automatically; `.env.example` docume
 
 `strict` enforces recipient existence and the service window. `loose` optimizes early integration and infers an omitted message type when unambiguous. `chaos` is reserved for deterministic fault policies; it currently uses strict validation and does not inject random failures. Reset safely with `uv run ghost.py reset`.
 
-## Sandbox control API
+## 🧰 Sandbox control API
 
 Everything below `/_sandbox` is intentionally not Meta-compatible: health/config/reset, virtual clock, phones and inbound messages, message/status inspection, webhook inspection/replay, media downloads, and the client WebSocket. This separation prevents test conveniences from leaking into the compatibility surface.
 
-## Fidelity and current boundary
+## 🎯 Fidelity and current boundary
 
 Implemented behavior is based on Meta's documented Cloud API and official Postman examples, plus the supplied saved references. The goal is contract-compatible behavior for documented and tested scenarios. IDs, delivery timing, opaque implementation details, policy enforcement, and some error wording are approximations.
 
 The first release does not yet implement Flows execution, commerce/catalogs, payments, QR codes, resumable template-media uploads, analytics, embedded signup, throughput token buckets, seven-day retry scheduling, automatic template-review delays, pricing cutovers, or a differential runner against an authorized Meta account. The boundaries allow those to be added without duplicating message rules.
 
-Do not use this project to impersonate WhatsApp, connect unauthorized accounts, or test undocumented private protocols.
+> [!CAUTION]
+> Do not use this project to impersonate WhatsApp, connect unauthorized accounts, or test undocumented private protocols.
 
-## Development
+<a id="development"></a>
+
+## 🛠️ Development
 
 ```powershell
 uv sync
