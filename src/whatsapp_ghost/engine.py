@@ -151,6 +151,13 @@ class Engine:
         phone = self.phone(phone_id)
         if not phone or not self.user(wa_id):
             raise ValueError("Unknown business phone or simulated user")
+        # Meta always sends inbound text as {"body": ...}; callers (the REST
+        # sandbox route and the phone websocket) may hand us a bare string, so
+        # normalize here rather than per caller.
+        if message_type == "text" and isinstance(payload, str):
+            payload = {"body": payload}
+        if isinstance(payload, dict) and payload.get("id"):
+            payload = self.media_payload(payload)
         conversation_id = self.conversation(phone_id, wa_id)
         message_id = "wamid." + secrets.token_urlsafe(24)
         now = self.store.now()
@@ -230,6 +237,21 @@ class Engine:
                 dead.append(socket)
         for socket in dead:
             self.listeners.get(wa_id, set()).discard(socket)
+
+    def media_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Fill in the media fields Meta always sends on inbound messages.
+
+        Cloud API reports ``mime_type`` and ``sha256`` from the stored object
+        rather than trusting the sender, so integrations can verify a download
+        against the webhook. Unknown media ids are passed through untouched.
+        """
+        media = self.store.one("SELECT mime_type, sha256 FROM media WHERE id=?", (payload["id"],))
+        if not media:
+            return payload
+        enriched = dict(payload)
+        enriched["mime_type"] = media["mime_type"]
+        enriched["sha256"] = media["sha256"]
+        return enriched
 
     def save_media(self, phone_id: str, content: bytes, mime_type: str, filename: str | None) -> str:
         media_id = str(secrets.randbelow(9_000_000_000_000_000) + 1_000_000_000_000_000)

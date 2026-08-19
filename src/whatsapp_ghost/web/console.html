@@ -37,8 +37,23 @@
       <a href="#" data-page="webhooks">Support</a>
     </nav>
     <div class="spacer"></div>
-    <div class="search"><svg class="ico" style="width:16px;height:16px"><use href="#i-search"/></svg><input placeholder="Search" aria-label="Search"></div>
-    <div class="avatar-pill">G</div>
+    <div class="search" id="global-search">
+      <svg class="ico" style="width:16px;height:16px"><use href="#i-search"/></svg>
+      <input id="gs-input" placeholder="Search" aria-label="Search" autocomplete="off" role="combobox"
+             aria-expanded="false" aria-controls="gs-results" aria-autocomplete="list">
+      <button type="button" class="gs-clear" id="gs-clear" aria-label="Clear search" hidden>&times;</button>
+      <div class="gs-results" id="gs-results" role="listbox" hidden></div>
+    </div>
+    <div class="avatar-menu" id="avatar-menu">
+      <button type="button" class="avatar-pill" id="avatar-btn" aria-haspopup="menu" aria-expanded="false" title="Account">G</button>
+      <div class="menu-pop" id="avatar-pop" role="menu" hidden>
+        <div class="menu-head"><b>Ghost developer</b><small id="avatar-mode">local sandbox</small></div>
+        <button type="button" role="menuitem" data-page="credentials">Credentials</button>
+        <button type="button" role="menuitem" data-page="apps">Apps &amp; Tokens</button>
+        <button type="button" role="menuitem" onclick="copyBaseUrl()">Copy base URL</button>
+        <button type="button" role="menuitem" onclick="reloadConsole()">Reload data</button>
+      </div>
+    </div>
   </header>
 
   <div class="layout">
@@ -53,6 +68,7 @@
       </div>
 
       <button class="side-link active" data-page="overview"><svg class="ico"><use href="#i-home"/></svg> Dashboard</button>
+      <button class="side-link" data-page="credentials"><svg class="ico"><use href="#i-key"/></svg> Credentials</button>
 
       <div class="side-section">Connect on WhatsApp</div>
       <button class="side-link" data-page="setup"><svg class="ico"><use href="#i-gear"/></svg> Production setup</button>
@@ -77,7 +93,7 @@
         <div class="head">
           <div>
             <h1>Your local WhatsApp platform</h1>
-            <p>Build against the exact Cloud API contract — create apps, register numbers, send templates and inspect webhooks — all offline on your machine.</p>
+            <p>Build against the exact Cloud API contract: create apps, register numbers, send templates and inspect webhooks, all offline on your machine.</p>
           </div>
           <button class="btn" onclick="openModal('app-modal')"><svg><use href="#i-plus"/></svg>Create app</button>
         </div>
@@ -109,13 +125,50 @@
         </div>
       </section>
 
+      <!-- CREDENTIALS -->
+      <section class="page" id="credentials">
+        <div class="crumbs">Home / <b>Credentials</b></div>
+        <div class="head">
+          <div><h1>Credentials</h1><p>Every ID, token and secret this sandbox uses, in one place. Nothing here is sensitive: it is a local test server.</p></div>
+          <button class="btn secondary" onclick="loadAll().then(()=>{renderCredentials();toast('Refreshed')})"><svg><use href="#i-refresh"/></svg>Refresh</button>
+        </div>
+
+        <div class="cred-picker">
+          <label>Sender number
+            <select class="field" id="cred-sender" onchange="renderCredentials()"></select>
+          </label>
+          <label>Developer app
+            <select class="field" id="cred-app" onchange="renderCredentials()"></select>
+          </label>
+          <label>Test customer
+            <select class="field" id="cred-customer" onchange="renderCredentials()"></select>
+          </label>
+        </div>
+
+        <div class="card">
+          <h2>Connection</h2>
+          <p class="card-sub">Point your service at this base URL and use the access token as a normal Bearer token.</p>
+          <div id="cred-grid" class="cred-grid"></div>
+        </div>
+
+        <div class="card" style="margin-top:16px">
+          <h2>Copy into your service</h2>
+          <p class="card-sub">Pre-filled with the selections above.</p>
+          <div class="cred-tabs" id="cred-tabs"></div>
+          <div class="code-wrap">
+            <button class="code-copy" onclick="copyText($('#cred-snippet').textContent)"><svg class="ico"><use href="#i-copy"/></svg> Copy</button>
+            <pre class="code-block" id="cred-snippet"></pre>
+          </div>
+        </div>
+      </section>
+
       <!-- SETUP (facebook-style checklist) -->
       <section class="page" id="setup">
         <div class="crumbs">Use cases / <b>Customize</b></div>
         <div class="head"><div><h1>Production setup</h1><p>Set up one or more accounts to contact your customers through WhatsApp APIs.</p></div></div>
         <div class="card">
           <div class="tasklist">
-            <div class="task done"><div class="check">✓</div><div class="t-main"><b>Configure Webhooks</b><span>Ready — deliveries are signed with your app secret</span></div><button class="btn ghost small" data-page="webhooks">Manage</button></div>
+            <div class="task done"><div class="check">✓</div><div class="t-main"><b>Configure Webhooks</b><span>Ready: deliveries are signed with your app secret</span></div><button class="btn ghost small" data-page="webhooks">Manage</button></div>
             <div class="task" id="s-number"><div class="check"></div><div class="t-main"><b>Register your WhatsApp phone number</b><span>About 1 minute</span></div><button class="btn ghost small" onclick="openModal('business-modal')">Add number</button></div>
             <div class="task" id="s-user"><div class="check"></div><div class="t-main"><b>Add a test customer</b><span>About 1 minute</span></div><button class="btn ghost small" onclick="openModal('phone-modal')">Add customer</button></div>
             <div class="task" id="s-msg"><div class="check"></div><div class="t-main"><b>Send message</b><span>About 2 minutes</span></div><button class="btn ghost small" data-page="simulator">Open simulator</button></div>
@@ -297,7 +350,7 @@
       <label>WABA</label><select class="field" id="wh-waba"></select>
       <label>Callback URL</label><input class="field" id="wh-url" type="url" required placeholder="http://127.0.0.1:9000/webhook">
       <label>Verify token (optional)</label><input class="field" id="wh-verify" placeholder="my-project-verify-token">
-      <p class="card-sub" style="margin-top:10px">When supplied, Ghost performs the real hub.challenge verification before saving. Events are signed with the local app secret.</p>
+      <p class="card-sub" style="margin-top:10px">When supplied, Ghost performs the real hub.challenge verification before saving. Events are signed with the app secret belonging to the token used to subscribe, so each app validates with its own secret.</p>
     </div>
     <div class="modal-foot"><button type="button" class="btn secondary" onclick="closeModal('webhook-modal')">Cancel</button><button class="btn">Verify &amp; subscribe</button></div>
   </form></div>

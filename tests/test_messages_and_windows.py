@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import time
 
 import pytest
@@ -179,3 +180,81 @@ def test_message_order_is_stable_with_identical_frozen_timestamps(client: TestCl
     }).json()["data"]
     assert [item["payload"]["text"]["body"] for item in history] == ["Third", "Second", "Hello business"]
     assert len({item["created_at"] for item in history}) == 1
+
+
+def test_inbound_text_from_socket_uses_meta_body_shape(client: TestClient) -> None:
+    """The phone UI sends {"payload": "..."} over the websocket. Meta always
+    delivers inbound text as {"text": {"body": ...}}, so a bare string must be
+    normalized rather than stored and forwarded as-is."""
+    with client.websocket_connect("/_sandbox/clients/15550002001") as socket:
+        socket.send_json({
+            "action": "send",
+            "phone_number_id": "PHONE_LOCAL",
+            "type": "text",
+            "payload": "sent from the phone UI",
+        })
+        # the sender is also a listener, so a broadcast can arrive before the ack
+        for _ in range(3):
+            frame = socket.receive_json()
+            if frame.get("event") == "accepted":
+                break
+        else:
+            raise AssertionError("no accepted frame")
+
+    assert frame["message"]["text"] == {"body": "sent from the phone UI"}
+
+    stored = client.get("/_sandbox/messages").json()["data"]
+    inbound = [m for m in stored if m["direction"] == "inbound"]
+    assert inbound[-1]["payload"]["text"] == {"body": "sent from the phone UI"}
+
+
+def test_inbound_media_webhook_reports_stored_mime_type_and_sha256(
+    client: TestClient, headers: dict[str, str]
+) -> None:
+    """Meta reports media mime_type and sha256 from the stored object, so a
+    receiver can verify a download against the webhook it was told about."""
+    png = bytes.fromhex("89504e470d0a1a0a") + b"demo-image-bytes"
+    upload = client.post(
+        "/v25.0/PHONE_LOCAL/media",
+        headers=headers,
+        files={"file": ("demo.png", png, "image/png")},
+        data={"messaging_product": "whatsapp"},
+    )
+    media_id = upload.json()["id"]
+
+    # the sender supplies only the id and a caption
+    inbound = client.post(
+        "/_sandbox/phones/15550002001/messages",
+        json={
+            "type": "image",
+            "phone_number_id": "PHONE_LOCAL",
+            "image": {"id": media_id, "caption": "here is my receipt"},
+        },
+    )
+
+    image = inbound.json()["image"]
+    assert image["caption"] == "here is my receipt"
+    assert image["mime_type"] == "image/png"
+    assert image["sha256"] == hashlib.sha256(png).hexdigest()
+
+
+def test_unknown_media_id_passes_through_without_invented_fields(client: TestClient) -> None:
+    """An id with no stored object must not gain fabricated media metadata."""
+    inbound = client.post(
+        "/_sandbox/phones/15550002001/messages",
+        json={"type": "image", "phone_number_id": "PHONE_LOCAL", "image": {"id": "does-not-exist"}},
+    )
+    assert inbound.status_code == 400
+
+
+def test_resubscribing_the_same_callback_does_not_duplicate_deliveries(
+    client: TestClient, headers: dict[str, str]
+) -> None:
+    """Subscribing the same URL twice used to leave two active rows, so every
+    event was delivered once per duplicate."""
+    payload = {"callback_url": "http://127.0.0.1:9/hook"}
+    for _ in range(3):
+        client.post("/v25.0/WABA_LOCAL/subscribed_apps", headers=headers, json=payload)
+
+    active = client.get("/v25.0/WABA_LOCAL/subscribed_apps", headers=headers).json()["data"]
+    assert len([s for s in active if s["callback_url"] == payload["callback_url"]]) == 1

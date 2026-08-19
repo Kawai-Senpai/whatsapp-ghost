@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
+from whatsapp_ghost.config import Settings
 from whatsapp_ghost.tui import PhoneApp
 
 
@@ -62,3 +64,87 @@ def test_all_packaged_web_assets_exist() -> None:
     web = Path(__file__).parents[1] / "src" / "whatsapp_ghost" / "web"
     expected = {"console.html", "console.css", "console.js", "phone.html", "phone.css", "phone.js"}
     assert expected <= {path.name for path in web.iterdir() if path.is_file()}
+
+
+def test_phone_client_renders_template_bodies_with_variables(client: TestClient) -> None:
+    """A real client shows the rendered template body, not the template name,
+    so the phone UI must substitute the sent positional parameters."""
+    phone_js = client.get("/static/phone.js").text
+    assert "function renderTemplateBody" in phone_js
+    assert "loadTemplateDefinitions" in phone_js
+    # substitutes {{n}} and falls back through currency/date_time fallback values
+    assert "fallback_value" in phone_js
+    assert "val.text || val.name" in phone_js
+
+
+def test_console_exposes_a_credentials_page(client: TestClient) -> None:
+    """Every ID, token and secret should be reachable from one page, with
+    ready-to-paste config for the common integrations."""
+    html = client.get("/console").text
+    assert 'data-page="credentials"' in html
+    assert 'id="cred-grid"' in html
+
+    console_js = client.get("/static/console.js").text
+    assert "function renderCredentials" in console_js
+    # the .env block must use the same names the services actually read
+    for key in ("WHATSAPP_GRAPH_BASE_URL", "WHATSAPP_ACCESS_TOKEN",
+                "WHATSAPP_PHONE_NUMBER_ID", "WHATSAPP_BUSINESS_ACCOUNT_ID",
+                "WHATSAPP_APP_SECRET", "WHATSAPP_WEBHOOK_VERIFY_TOKEN"):
+        assert key in console_js
+    # onclick handlers must not be broken by embedded double quotes
+    assert "onclick=\"setCredFormat('" in console_js
+
+
+def test_docker_compose_defaults_are_deployable() -> None:
+    """The container must be able to serve a non-localhost address: it listens
+    on 0.0.0.0, keeps its data on a volume, and lets WABA_BASE_URL be
+    overridden so absolute media URLs point at the real host."""
+    root = Path(__file__).resolve().parent.parent
+    dockerfile = (root / "Dockerfile").read_text(encoding="utf-8")
+    compose = (root / "docker-compose.yml").read_text(encoding="utf-8")
+
+    assert "--host" in dockerfile and "0.0.0.0" in dockerfile
+    assert "WABA_DATA_DIR=/data" in dockerfile
+    # media and the database must outlive the container
+    assert "ghost-data:/data" in compose
+    # every credential and the base URL must be overridable from the environment
+    for key in ("WABA_BASE_URL", "WABA_ACCESS_TOKEN", "WABA_APP_SECRET", "WABA_VERIFY_TOKEN"):
+        assert key in compose
+
+
+def test_binary_upload_to_a_json_endpoint_reports_422_not_a_server_error(client: TestClient) -> None:
+    """A multipart image sent to a JSON-only endpoint is a client mistake.
+
+    FastAPI's default validation handler echoes the offending input back and
+    calls .decode() on it, so raw PNG bytes surfaced as a 500 UnicodeDecodeError
+    instead of a validation error.
+    """
+    png = bytes.fromhex("89504e470d0a1a0a") + b"\x00\xff" * 40
+    response = client.post(
+        "/_sandbox/phones/15550002001/messages",
+        files={"file": ("test.png", png, "image/png")},
+        data={"type": "image"},
+    )
+
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    # the binary payload must be summarised, never echoed back raw
+    assert "binary data" in json.dumps(detail)
+
+
+def test_console_html_is_read_fresh_so_edits_need_no_restart(
+    settings: Settings, tmp_path: Path
+) -> None:
+    """Reading the markup at import time froze it for the process lifetime,
+    so edits to web/console.html only appeared after a server restart."""
+    from whatsapp_ghost import web_console
+
+    first = web_console.CONSOLE_HTML
+    target = web_console.WEB_DIR / "console.html"
+    original = target.read_text(encoding="utf-8")
+    try:
+        target.write_text(original + "\n<!-- edited -->", encoding="utf-8")
+        assert "<!-- edited -->" in web_console.CONSOLE_HTML
+        assert "<!-- edited -->" not in first
+    finally:
+        target.write_text(original, encoding="utf-8")

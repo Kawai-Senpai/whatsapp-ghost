@@ -8,5 +8,10 @@ dist/
 build/
 .whatsapp-ghost/
 whatsapp-ghost.db*
-tmp
+tmp/
 .env
+.git/
+.github/
+assets/
+tests/
+uv.lock

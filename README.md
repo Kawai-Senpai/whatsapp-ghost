@@ -121,6 +121,59 @@ The web console and terminal phone share the same SQLite state, so a conversatio
 
 <a id="connect-your-app"></a>
 
+## 🐳 Docker
+
+Run the sandbox in a container, locally or on a shared server:
+
+```bash
+docker compose up -d --build
+```
+
+That is all it needs on your own machine. The console is on
+[localhost:8787](http://127.0.0.1:8787), the database and uploaded media live in
+the `ghost-data` volume, and the container restarts with Docker.
+
+### Deploying to a server
+
+Media download URLs are absolute, and they are built from `WABA_BASE_URL`. Set
+it to the address your clients actually use, otherwise they receive
+`http://127.0.0.1:8787/...` and try to download the file from themselves.
+
+Create a `.env` next to `docker-compose.yml`:
+
+```ini
+WABA_BASE_URL=http://203.0.113.10:8787   # or https://ghost.example.com
+WABA_ACCESS_TOKEN=pick-any-token
+WABA_APP_SECRET=pick-any-secret
+WABA_VERIFY_TOKEN=pick-any-verify-token
+```
+
+Then `docker compose up -d`. Every value has a working default, so you only need
+the ones you want to change, but on a server `WABA_BASE_URL` is not optional.
+
+`WABA_PORT` changes the published host port (`WABA_PORT=9000`) while the
+container keeps listening on 8787 internally.
+
+### Behind a reverse proxy
+
+Terminate TLS at your proxy, forward to the container's port 8787, and set
+`WABA_BASE_URL` to the public HTTPS origin. The web console and the phone
+simulator use a WebSocket, so the proxy must pass upgrade headers. For nginx:
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:8787;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_set_header Host $host;
+}
+```
+
+> **This is a test server with no real authentication.** Any caller holding the
+> token can send messages and read history, so keep it on a private network or
+> behind your own access control rather than open to the internet.
+
 ## 🔌 Connect your app
 
 Keep your existing Cloud API code and change its configuration:

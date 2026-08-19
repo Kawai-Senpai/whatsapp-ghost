@@ -1,0 +1,34 @@
+services:
+  whatsapp-ghost:
+    build: .
+    image: whatsapp-ghost:latest
+    container_name: whatsapp-ghost
+    restart: unless-stopped
+    ports:
+      - "${WABA_PORT:-8787}:8787"
+    environment:
+      # IMPORTANT when deploying to a server: this must be the address clients
+      # reach the container on, e.g. http://203.0.113.10:8787 or
+      # https://ghost.example.com. Media download URLs are absolute and are
+      # built from this value, so a wrong host breaks media for remote clients.
+      WABA_BASE_URL: "${WABA_BASE_URL:-http://127.0.0.1:8787}"
+      WABA_ACCESS_TOKEN: "${WABA_ACCESS_TOKEN:-local-dev-token}"
+      WABA_APP_SECRET: "${WABA_APP_SECRET:-local-app-secret}"
+      WABA_VERIFY_TOKEN: "${WABA_VERIFY_TOKEN:-local-verify-token}"
+      WABA_MODE: "${WABA_MODE:-strict}"
+      WABA_STATUS_DELAY: "${WABA_STATUS_DELAY:-0.05}"
+      # No desktop session in a container, so disable notification popups.
+      WABA_NOTIFY: "none"
+    volumes:
+      # Keeps the database and uploaded media across restarts and rebuilds.
+      - ghost-data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8787/_sandbox/health', timeout=3).status == 200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+volumes:
+  ghost-data:

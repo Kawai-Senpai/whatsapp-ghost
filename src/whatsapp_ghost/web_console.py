@@ -17,5 +17,15 @@ def asset(name: str) -> str:
     return (WEB_DIR / name).read_text(encoding="utf-8")
 
 
-CONSOLE_HTML = asset("console.html")
-PHONE_HTML = asset("phone.html")
+_LAZY = {"CONSOLE_HTML": "console.html", "PHONE_HTML": "phone.html"}
+
+
+def __getattr__(name: str) -> str:
+    """Serve CONSOLE_HTML/PHONE_HTML fresh from disk on every access.
+
+    Reading at import time would freeze the markup for the life of the process,
+    so edits to the web/ files would need a server restart to show up.
+    """
+    if name in _LAZY:
+        return asset(_LAZY[name])
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

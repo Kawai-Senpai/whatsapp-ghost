@@ -1,5 +1,5 @@
 /* ===== WhatsApp Ghost developer console ===== */
-const state = { config:{}, apps:[], businesses:[], users:[], messages:[], webhooks:[], subscriptions:[] };
+const state = { config:{}, apps:[], businesses:[], users:[], messages:[], webhooks:[], subscriptions:[], templates:[] };
 let guideLanguage = 'curl';
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -31,6 +31,7 @@ function goto(page){
   document.querySelectorAll('.side-link').forEach(b=>b.classList.toggle('active', b.dataset.page===page));
   document.querySelectorAll('.page').forEach(p=>p.classList.toggle('active', p.id===page));
   window.scrollTo(0,0);
+  if(page==='credentials') renderCredentials();
   if(page==='webhooks') loadWebhooks();
   if(page==='templates') loadTemplates();
   if(page==='guide') renderGuide();
@@ -49,6 +50,7 @@ async function loadAll(){
     const numbers = state.businesses.reduce((n,b)=>n+b.phone_numbers.length,0);
 
     $('#base-small').textContent = state.config.base_url.replace(/^https?:\/\//,'');
+    if($('#avatar-mode')) $('#avatar-mode').textContent = state.config.base_url.replace(/^https?:\/\//,'') + ' · ' + state.config.mode;
     $('#mode-foot').textContent = state.config.mode.toUpperCase();
     $('#endpoint').textContent = state.config.base_url + '/v25.0/PHONE_LOCAL/messages';
     $('#m-apps').textContent = state.apps.length;
@@ -62,6 +64,7 @@ async function loadAll(){
 
     renderApps(); renderBusinesses(); renderUsers(); fillSelectors();
     await loadTemplates(); await loadWebhooks();
+    renderCredentials();
   }catch(e){ toast(e.message,true); }
 }
 function setTask(id, done){ const el=$('#'+id); if(el) el.classList.toggle('done', done); const c=el?.querySelector('.check'); if(c) c.textContent=done?'✓':''; }
@@ -146,6 +149,7 @@ async function loadTemplates(){
   for(const b of state.businesses){
     try{ const d=await req(`/v25.0/${b.id}/message_templates`,{headers:{Authorization:'Bearer '+state.config.access_token}}); all.push(...d.data.map(t=>({...t,_waba:b.name}))); }catch{}
   }
+  state.templates=all;
   $('#template-list').innerHTML = all.map(t=>`
     <div class="item"><div class="item-head">
       <div class="avatar"><svg class="ico" style="color:var(--fb-blue)"><use href="#i-template"/></svg></div>
@@ -298,4 +302,366 @@ function openPhoneForBusiness(phoneId){
 document.querySelectorAll('.modal-back').forEach(m=>m.addEventListener('click',e=>{ if(e.target===m) m.classList.remove('open'); }));
 if(location.pathname==='/guide') goto('guide');
 else if(location.hash==='#simulator') goto('simulator');
-loadAll();
+loadAll().then(()=>gsWarmIndex());
+
+/* ---- credentials ---- */
+const CRED_FORMATS = ['.env', 'curl', 'Python', 'Node', 'JSON'];
+let credFormat = '.env';
+
+function credRow(key, value, hint){
+  if(!value) return '';
+  return `<div class="cred-row"><div class="k">${esc(key)}</div>
+    <div class="v"><code>${esc(value)}</code>
+      <button class="cred-copy" onclick="copyText(this.previousElementSibling.textContent)">Copy</button></div>
+    ${hint?`<span class="hint">${esc(hint)}</span>`:''}</div>`;
+}
+
+/* The selected sender, app and customer, falling back to the first of each so
+   the page is useful before anything is chosen. */
+function credSelection(){
+  const senders = [];
+  state.businesses.forEach(b => b.phone_numbers.forEach(p => senders.push({...p, waba: b})));
+  const sender = senders.find(s => s.id === $('#cred-sender')?.value) || senders[0];
+  const app = state.apps.find(a => a.id === $('#cred-app')?.value) || state.apps[0];
+  const customer = state.users.find(u => u.wa_id === $('#cred-customer')?.value) || state.users[0];
+  const subscription = state.subscriptions.find(s => s.active && sender && s.waba_id === sender.waba.id)
+    || state.subscriptions.find(s => s.active);
+  return {senders, sender, app, customer, subscription};
+}
+
+function renderCredentials(){
+  const {senders, sender, app, customer, subscription} = credSelection();
+  const base = state.config.base_url || location.origin;
+  const token = app?.access_token || state.config.access_token;
+
+  // keep the pickers populated without clobbering an existing choice
+  const fill = (sel, html, value) => {
+    const el = $(sel); if(!el) return;
+    el.innerHTML = html; if(value) el.value = value;
+  };
+  fill('#cred-sender', senders.map(s=>`<option value="${esc(s.id)}">${esc(s.verified_name)} · +${esc(s.display_phone_number)}</option>`).join('')
+    || '<option value="">— add a business first —</option>', sender?.id);
+  fill('#cred-app', state.apps.map(a=>`<option value="${esc(a.id)}">${esc(a.name)} · ${esc(a.id)}</option>`).join('')
+    || '<option value="">— default local token —</option>', app?.id);
+  fill('#cred-customer', state.users.map(u=>`<option value="${esc(u.wa_id)}">${esc(u.display_name)} · +${esc(u.wa_id)}</option>`).join('')
+    || '<option value="">— add a customer first —</option>', customer?.wa_id);
+
+  $('#cred-grid').innerHTML = [
+    credRow('Base URL', base, 'Replaces https://graph.facebook.com'),
+    credRow('API version', 'v25.0', 'Any version path is accepted'),
+    credRow('Access token', token, 'Send as: Authorization: Bearer <token>'),
+    credRow('Phone number ID', sender?.id, 'The {phone_id} in /{version}/{phone_id}/messages'),
+    credRow('WhatsApp Business Account ID', sender?.waba?.id, 'Owns templates and subscriptions'),
+    credRow('Business ID', sender?.waba?.business_id),
+    credRow('Business phone number', sender && ('+' + sender.display_phone_number), 'The sender your customers see'),
+    credRow('App ID', app?.id),
+    credRow('App secret', app?.app_secret, 'Belongs to this app alone; validates X-Hub-Signature-256 for webhooks it subscribed'),
+    credRow('Webhook verify token', subscription?.verify_token || '— none subscribed —', 'The token you chose when subscribing; echoed back during GET /webhook verification'),
+    credRow('Webhook callback URL', subscription?.callback_url || '— not subscribed —', 'Where signed events are delivered'),
+    credRow('Test customer', customer && ('+' + customer.wa_id), 'Recipient "to" value; omit the +'),
+  ].join('') || '<div class="empty">Nothing configured yet.</div>';
+
+  $('#cred-tabs').innerHTML = CRED_FORMATS.map(f =>
+    `<button class="cred-tab${f===credFormat?' active':''}" onclick="setCredFormat('${esc(f)}')">${esc(f)}</button>`).join('');
+  $('#cred-snippet').textContent = credSnippet(base, token, sender, customer, app, subscription);
+}
+
+function setCredFormat(format){ credFormat = format; renderCredentials(); }
+
+function credSnippet(base, token, sender, customer, app, subscription){
+  const phoneId = sender?.id || 'PHONE_LOCAL';
+  const waba = sender?.waba?.id || 'WABA_LOCAL';
+  const to = customer?.wa_id || '15550002001';
+  const secret = app?.app_secret || 'local-app-secret';
+  const verify = subscription?.verify_token || 'local-verify-token';
+
+  if(credFormat === '.env'){
+    return `WHATSAPP_GRAPH_BASE_URL=${base}
+WHATSAPP_API_VERSION=v25.0
+WHATSAPP_ACCESS_TOKEN=${token}
+WHATSAPP_PHONE_NUMBER_ID=${phoneId}
+WHATSAPP_BUSINESS_ACCOUNT_ID=${waba}
+WHATSAPP_APP_SECRET=${secret}
+WHATSAPP_WEBHOOK_VERIFY_TOKEN=${verify}`;
+  }
+  if(credFormat === 'curl'){
+    return `curl -X POST "${base}/v25.0/${phoneId}/messages" \
+  -H "Authorization: Bearer ${token}" \
+  -H "Content-Type: application/json" \
+  -d '${JSON.stringify({messaging_product:'whatsapp',to,type:'template',template:{name:'hello_world',language:{code:'en_US'},components:[{type:'body',parameters:[{type:'text',text:'Tester'}]}]}})}'`;
+  }
+  if(credFormat === 'Python'){
+    return `import httpx
+
+BASE_URL = "${base}"
+ACCESS_TOKEN = "${token}"
+PHONE_NUMBER_ID = "${phoneId}"
+
+response = httpx.post(
+    f"{BASE_URL}/v25.0/{PHONE_NUMBER_ID}/messages",
+    headers={"Authorization": f"Bearer {ACCESS_TOKEN}"},
+    json={
+        "messaging_product": "whatsapp",
+        "to": "${to}",
+        "type": "text",
+        "text": {"body": "Hello from the sandbox"},
+    },
+)
+print(response.json())`;
+  }
+  if(credFormat === 'Node'){
+    return `const BASE_URL = ${JSON.stringify(base)};
+const ACCESS_TOKEN = ${JSON.stringify(token)};
+const PHONE_NUMBER_ID = ${JSON.stringify(phoneId)};
+
+const response = await fetch(\`\${BASE_URL}/v25.0/\${PHONE_NUMBER_ID}/messages\`, {
+  method: 'POST',
+  headers: {
+    Authorization: \`Bearer \${ACCESS_TOKEN}\`,
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify({
+    messaging_product: 'whatsapp',
+    to: '${to}',
+    type: 'text',
+    text: { body: 'Hello from the sandbox' },
+  }),
+});
+console.log(await response.json());`;
+  }
+  return JSON.stringify({
+    base_url: base, api_version: 'v25.0', access_token: token,
+    phone_number_id: phoneId, whatsapp_business_account_id: waba,
+    business_id: sender?.waba?.business_id, app_id: app?.id, app_secret: secret,
+    webhook_verify_token: verify, webhook_callback_url: subscription?.callback_url || null,
+    test_customer: to,
+  }, null, 2);
+}
+
+/* ---- global search ---- */
+/* Templates and subscriptions are normally fetched only when their page is
+   opened. Search spans the whole console, so warm that data once at startup
+   without touching the DOM those page renderers own. */
+async function gsWarmIndex(){
+  try{
+    const subs = await req('/_sandbox/webhook-subscriptions');
+    state.subscriptions = subs.data;
+  }catch{}
+  if(state.config.access_token && !(state.templates||[]).length){
+    const all=[];
+    for(const b of state.businesses){
+      try{
+        const d=await req(`/v25.0/${b.id}/message_templates`,{headers:{Authorization:'Bearer '+state.config.access_token}});
+        all.push(...d.data.map(t=>({...t,_waba:b.name})));
+      }catch{}
+    }
+    state.templates=all;
+  }
+}
+
+const GS_PAGES = [
+  {page:'overview',    icon:'i-home',     title:'Dashboard',            sub:'Overview, metrics and getting-started tasks'},
+  {page:'credentials', icon:'i-key',      title:'Credentials',          sub:'IDs, tokens and secrets used by this sandbox'},
+  {page:'setup',       icon:'i-gear',     title:'Production setup',     sub:'Set up accounts to contact customers'},
+  {page:'resources',   icon:'i-numbers',  title:'API Setup & Numbers',  sub:'Business accounts and registered senders'},
+  {page:'apps',        icon:'i-key',      title:'Apps & Tokens',        sub:'Developer apps, app secrets and access tokens'},
+  {page:'templates',   icon:'i-template', title:'Message Templates',    sub:'Approved local templates with positional variables'},
+  {page:'webhooks',    icon:'i-webhook',  title:'Webhooks',             sub:'Signed events, delivery attempts and replay'},
+  {page:'guide',       icon:'i-guide',    title:'Integration Guide',    sub:'Connect an application in minutes'},
+  {page:'simulator',   icon:'i-phone',    title:'Phone Simulator',      sub:'Open a full WhatsApp Web experience'}
+];
+
+function gsIndex(){
+  const out = [];
+  GS_PAGES.forEach(p => out.push({
+    group:'Pages', icon:p.icon, title:p.title, sub:p.sub,
+    hay:p.title + ' ' + p.sub + ' ' + p.page, run:()=>goto(p.page)
+  }));
+
+  state.businesses.forEach(b => {
+    out.push({
+      group:'Businesses', icon:'i-numbers', title:b.name,
+      sub:b.id + ' · ' + b.phone_numbers.length + ' sender' + (b.phone_numbers.length===1?'':'s'),
+      hay:b.name + ' ' + b.id, run:()=>goto('resources')
+    });
+    b.phone_numbers.forEach(ph => out.push({
+      group:'Sender numbers', icon:'i-phone',
+      title:ph.verified_name + ' · +' + ph.display_phone_number,
+      sub:ph.id + ' · ' + b.name,
+      hay:ph.verified_name + ' ' + ph.display_phone_number + ' ' + ph.id + ' ' + b.name,
+      run:()=>goto('resources')
+    }));
+  });
+
+  state.apps.forEach(a => out.push({
+    group:'Apps', icon:'i-key', title:a.name, sub:a.id,
+    hay:a.name + ' ' + a.id, run:()=>goto('apps')
+  }));
+
+  (state.templates||[]).forEach(t => {
+    const body = (t.components||[]).find(c=>c.type==='BODY');
+    out.push({
+      group:'Templates', icon:'i-template', title:t.name,
+      sub:t.status + ' · ' + t.language + ' · ' + t._waba,
+      hay:[t.name,t.status,t.language,t.category,t._waba,(body&&body.text)||''].join(' '),
+      run:()=>goto('templates')
+    });
+  });
+
+  state.users.forEach(u => out.push({
+    group:'Test customers', icon:'i-phone', title:u.display_name,
+    sub:'+' + u.wa_id + ' · open WhatsApp Web',
+    hay:u.display_name + ' ' + u.wa_id, run:()=>openPhoneTabFor(u.wa_id)
+  }));
+
+  (state.subscriptions||[]).filter(s=>s.active).forEach(s => out.push({
+    group:'Webhook endpoints', icon:'i-webhook', title:s.callback_url || 'Subscription',
+    sub:[s.business_name||s.waba_id, s.app_name||s.app_id].filter(Boolean).join(' · ') || 'Configured endpoint',
+    hay:[s.callback_url||'', s.waba_id||'', s.business_name||'', s.app_name||'', s.app_id||'', 'webhook subscription endpoint'].join(' '),
+    run:()=>goto('webhooks')
+  }));
+
+  return out;
+}
+
+function gsScore(entry, q){
+  const hay = entry.hay.toLowerCase(), title = entry.title.toLowerCase();
+  if(title.startsWith(q)) return 0;
+  if(title.includes(q)) return 1;
+  if(hay.includes(q)) return 2;
+  return -1;
+}
+function gsMark(text, q){
+  const t = String(text == null ? '' : text);
+  const i = t.toLowerCase().indexOf(q);
+  if(i < 0) return esc(t);
+  return esc(t.slice(0,i)) + '<mark>' + esc(t.slice(i,i+q.length)) + '</mark>' + esc(t.slice(i+q.length));
+}
+
+let gsMatches = [], gsActive = -1;
+
+function gsRender(){
+  const box = $('#gs-results'), q = $('#gs-input').value.trim().toLowerCase();
+  $('#gs-clear').hidden = !q;
+  if(!q){ gsClose(); return; }
+
+  const seen = new Set();
+  const scored = gsIndex()
+    .map((e,i) => ({e:e, s:gsScore(e,q), i:i}))
+    .filter(x => {
+      if(x.s < 0) return false;
+      const key = x.e.group + '\u0000' + x.e.title + '\u0000' + (x.e.sub||'');
+      if(seen.has(key)) return false;   // collapse duplicates (e.g. one endpoint per WABA)
+      seen.add(key);
+      return true;
+    });
+
+  // Rank groups by their strongest match, then keep each group contiguous.
+  // Contiguity matters: the rendered group headers must line up with the
+  // data-i indices, otherwise arrow keys and clicks select the wrong row.
+  const bestByGroup = new Map();
+  scored.forEach(x => {
+    const cur = bestByGroup.get(x.e.group);
+    if(cur === undefined || x.s < cur) bestByGroup.set(x.e.group, x.s);
+  });
+
+  gsMatches = scored
+    .sort((a,b) => {
+      const ga = bestByGroup.get(a.e.group), gb = bestByGroup.get(b.e.group);
+      if(ga !== gb) return ga - gb;
+      if(a.e.group !== b.e.group) return a.e.group < b.e.group ? -1 : 1;
+      if(a.s !== b.s) return a.s - b.s;
+      return a.i - b.i;
+    })
+    .slice(0,20)
+    .map(x => x.e);
+
+  if(!gsMatches.length){
+    box.innerHTML = '<div class="gs-empty">No matches for &quot;' + esc(q) + '&quot;</div>';
+  } else {
+    let html = '', group = null;
+    gsMatches.forEach((e,i) => {
+      if(e.group !== group){ group = e.group; html += '<div class="gs-group">' + esc(group) + '</div>'; }
+      html += '<div class="gs-item" role="option" data-i="' + i + '">' +
+        '<span class="gs-ico"><svg class="ico"><use href="#' + esc(e.icon) + '"/></svg></span>' +
+        '<span class="gs-main"><b>' + gsMark(e.title,q) + '</b><small>' + gsMark(e.sub||'',q) + '</small></span>' +
+      '</div>';
+    });
+    html += '<div class="gs-hint"><span><kbd>&uarr;</kbd><kbd>&darr;</kbd> navigate</span>' +
+            '<span><kbd>Enter</kbd> open</span><span><kbd>Esc</kbd> close</span></div>';
+    box.innerHTML = html;
+  }
+  gsActive = gsMatches.length ? 0 : -1;
+  gsHighlight();
+  box.hidden = false;
+  $('#gs-input').setAttribute('aria-expanded','true');
+}
+
+function gsHighlight(){
+  document.querySelectorAll('#gs-results .gs-item').forEach(el=>{
+    const on = Number(el.dataset.i) === gsActive;
+    el.classList.toggle('active', on);
+    if(on) el.scrollIntoView({block:'nearest'});
+  });
+}
+function gsClose(){
+  const box = $('#gs-results');
+  box.hidden = true; box.innerHTML = '';
+  gsMatches = []; gsActive = -1;
+  $('#gs-input').setAttribute('aria-expanded','false');
+}
+function gsChoose(i){
+  const e = gsMatches[i];
+  if(!e) return;
+  gsClose();
+  $('#gs-input').blur();
+  e.run();
+}
+
+$('#gs-input').addEventListener('input', gsRender);
+$('#gs-input').addEventListener('focus', ()=>{ if($('#gs-input').value.trim()) gsRender(); });
+$('#gs-input').addEventListener('keydown', e=>{
+  if(e.key === 'ArrowDown' || e.key === 'ArrowUp'){
+    if(!gsMatches.length) return;
+    e.preventDefault();
+    gsActive = (gsActive + (e.key === 'ArrowDown' ? 1 : -1) + gsMatches.length) % gsMatches.length;
+    gsHighlight();
+  } else if(e.key === 'Enter'){
+    if(gsActive >= 0){ e.preventDefault(); gsChoose(gsActive); }
+  } else if(e.key === 'Escape'){
+    if(!$('#gs-results').hidden){ e.preventDefault(); gsClose(); }
+    else { $('#gs-input').value=''; $('#gs-clear').hidden=true; $('#gs-input').blur(); }
+  }
+});
+$('#gs-results').addEventListener('mousedown', e=>{
+  const item = e.target.closest('.gs-item');
+  if(item){ e.preventDefault(); gsChoose(Number(item.dataset.i)); }
+});
+$('#gs-results').addEventListener('mousemove', e=>{
+  const item = e.target.closest('.gs-item');
+  if(item && Number(item.dataset.i) !== gsActive){ gsActive = Number(item.dataset.i); gsHighlight(); }
+});
+$('#gs-clear').addEventListener('click', ()=>{
+  $('#gs-input').value=''; gsClose(); $('#gs-clear').hidden=true; $('#gs-input').focus();
+});
+document.addEventListener('click', e=>{ if(!e.target.closest('#global-search')) gsClose(); });
+document.addEventListener('keydown', e=>{
+  const el = document.activeElement;
+  const typing = el && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName || '');
+  if((e.key === '/' && !typing) || ((e.ctrlKey||e.metaKey) && e.key.toLowerCase() === 'k')){
+    e.preventDefault(); $('#gs-input').focus(); $('#gs-input').select();
+  }
+});
+
+/* ---- avatar menu ---- */
+function avatarOpen(open){
+  $('#avatar-pop').hidden = !open;
+  $('#avatar-btn').setAttribute('aria-expanded', String(open));
+}
+$('#avatar-btn').addEventListener('click', e=>{ e.stopPropagation(); avatarOpen($('#avatar-pop').hidden); });
+$('#avatar-pop').addEventListener('click', e=>{ if(e.target.closest('button')) avatarOpen(false); });
+document.addEventListener('click', e=>{ if(!e.target.closest('#avatar-menu')) avatarOpen(false); });
+document.addEventListener('keydown', e=>{ if(e.key === 'Escape') avatarOpen(false); });
+
+function copyBaseUrl(){ copyText(state.config.base_url || location.origin); }
+function reloadConsole(){ loadAll().then(()=>gsWarmIndex()); toast('Reloading sandbox data'); }

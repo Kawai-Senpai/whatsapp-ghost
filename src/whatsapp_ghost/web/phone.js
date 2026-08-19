@@ -1,7 +1,7 @@
 /* ===== WhatsApp Web clone — logic ===== */
 const params = new URLSearchParams(location.search);
 const state = {
-  config:{}, businesses:[], users:[],
+  config:{}, businesses:[], users:[], templates:{},
   wa: params.get('phone') || '',      // the simulated customer (us)
   activePhone: params.get('business') || '',  // business phone_number_id we're chatting with
   socket:null, reconnect:null, reading:false,
@@ -18,6 +18,30 @@ async function req(url, options={}){
   return d;
 }
 
+/* Render a template's body text with its positional {{n}} parameters filled
+   in, mirroring what the recipient actually sees in WhatsApp. Falls back to
+   an empty string when the template definition has not been loaded. */
+function templateParamValue(param){
+  if(!param || typeof param !== 'object') return '';
+  if(param.type === 'currency') return param.currency?.fallback_value ?? '';
+  if(param.type === 'date_time') return param.date_time?.fallback_value ?? '';
+  return param.text ?? '';
+}
+
+function renderTemplateBody(name, tpl){
+  const key = name + '|' + (tpl.language?.code || '');
+  const definition = state.templates[key] || state.templates[name];
+  if(!definition) return '';
+  const bodyComponent = (definition.components || []).find(c => (c.type||'').toUpperCase() === 'BODY');
+  if(!bodyComponent || typeof bodyComponent.text !== 'string') return '';
+  const sent = (tpl.components || []).find(c => (c.type||'').toLowerCase() === 'body');
+  const values = (sent?.parameters || []).map(templateParamValue);
+  return bodyComponent.text.replace(/\{\{(\d+)\}\}/g, (match, index) => {
+    const value = values[Number(index) - 1];
+    return value === undefined || value === '' ? match : value;
+  });
+}
+
 /* Robustly extract a human-readable body from any stored payload shape. */
 function messageText(m){
   const p = m.payload || {};
@@ -31,7 +55,11 @@ function messageText(m){
     return {kind:'text', text:txt};
   }
   if(t === 'template'){
-    return {kind:'template', name:(p.template?.name || p.name || 'template')};
+    const tpl = p.template || {};
+    const name = tpl.name || p.name || 'template';
+    // A real client shows the rendered body, not the template name, so the
+    // positional {{n}} values are substituted from the sent parameters.
+    return {kind:'template', name, text: renderTemplateBody(name, tpl)};
   }
   if(['image','video','audio','document','sticker'].includes(t)){
     const media = p[t] || {};
@@ -62,12 +90,29 @@ function jsonHtml(value){
   });
 }
 
+/* Template bodies live on the WABA, so they are fetched once per business and
+   keyed by name|language for rendering sent template messages. */
+async function loadTemplateDefinitions(){
+  const token = state.config.access_token;
+  if(!token) return;
+  for(const business of state.businesses){
+    try{
+      const d = await req(`/v25.0/${business.id}/message_templates`, {headers:{Authorization:'Bearer '+token}});
+      for(const tpl of (d.data || [])){
+        state.templates[tpl.name + '|' + tpl.language] = tpl;
+        state.templates[tpl.name] = tpl;
+      }
+    }catch{ /* a business without readable templates just renders the name */ }
+  }
+}
+
 /* ---- boot ---- */
 async function boot(){
   try{
     state.config = await req('/_sandbox/config');
     const [biz,users] = await Promise.all([req('/_sandbox/businesses'), req('/_sandbox/phones')]);
     state.businesses = biz.data; state.users = users.data;
+    await loadTemplateDefinitions();
     if(!state.wa && state.users.length) state.wa = state.users[0].wa_id;
     const me = state.users.find(u=>u.wa_id===state.wa);
     $('#me-avatar').textContent = initials(me?.display_name || state.wa || 'Y');
@@ -137,7 +182,7 @@ async function loadMessages(){
   // last preview + time on chat row
   const last = all[all.length-1];
   const lv = messageText(last);
-  const lastPreview = lv.kind==='template' ? 'Template · '+lv.name
+  const lastPreview = lv.kind==='template' ? (lv.text || 'Template · '+lv.name)
     : lv.kind==='media' ? (lv.label + (lv.caption?': '+lv.caption:''))
     : lv.text;
   const cp=$('#cp-'+CSS.escape(state.activePhone)), ct=$('#ct-'+CSS.escape(state.activePhone));
@@ -152,7 +197,7 @@ async function loadMessages(){
     let sep=''; if(day!==lastDay){ lastDay=day; sep=`<div class="day-sep">${esc(day)}</div>`; }
     let bodyHtml = '';
     if(val.kind==='template'){
-      bodyHtml = `<span class="tpl-tag">TEMPLATE</span><span class="body">${esc(val.name)}</span>`;
+      bodyHtml = `<span class="tpl-tag">TEMPLATE</span><span class="body">${esc(val.text || val.name)}</span>`;
     } else if(val.kind==='media'){
       if(val.mtype==='image' && val.src) bodyHtml += `<img class="media-thumb" src="${esc(val.src)}" alt="">`;
       else bodyHtml += `<span class="tpl-tag">${esc(val.label).toUpperCase()}</span>`;

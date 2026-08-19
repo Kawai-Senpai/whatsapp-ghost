@@ -11,8 +11,10 @@ from typing import Any
 
 import httpx
 from fastapi import Body, FastAPI, File, Form, Header, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.encoders import jsonable_encoder
 from fastapi.staticfiles import StaticFiles
 
 from .clock import parse_datetime, parse_duration
@@ -20,7 +22,7 @@ from .config import Settings
 from .db import Store
 from .engine import Engine, normalize_phone
 from .errors import graph_error
-from .web_console import CONSOLE_HTML, PHONE_HTML, WEB_DIR
+from .web_console import asset, WEB_DIR
 
 
 def rows(items: list[Any]) -> list[dict[str, Any]]:
@@ -48,6 +50,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.settings = settings
     app.state.store = store
     app.state.engine = engine
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error_handler(request: Request, exc: RequestValidationError):
+        """Return a clean 422 even when the request carried binary data.
+
+        FastAPI's default handler echoes the offending input back in the error
+        body, which raises UnicodeDecodeError (a 500) when that input is an
+        uploaded image. Drop the raw input so multipart uploads report the
+        actual validation problem instead of crashing.
+        """
+        details = []
+        for err in exc.errors():
+            cleaned = {k: v for k, v in err.items() if k != "input"}
+            value = err.get("input")
+            if isinstance(value, bytes):
+                cleaned["input"] = f"<{len(value)} bytes of binary data>"
+            elif value is not None:
+                cleaned["input"] = value
+            details.append(cleaned)
+        return JSONResponse({"detail": jsonable_encoder(details)}, status_code=422)
     app.mount("/static", StaticFiles(directory=str(WEB_DIR)), name="static")
 
     def valid_access_token(token: str) -> bool:
@@ -83,15 +105,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/console", response_class=HTMLResponse, include_in_schema=False)
     def console_page():
-        return HTMLResponse(CONSOLE_HTML)
+        return HTMLResponse(asset("console.html"))
 
     @app.get("/guide", response_class=HTMLResponse, include_in_schema=False)
     def guide_page():
-        return HTMLResponse(CONSOLE_HTML)
+        return HTMLResponse(asset("console.html"))
 
     @app.get("/phone", response_class=HTMLResponse, include_in_schema=False)
     def phone_page():
-        return HTMLResponse(PHONE_HTML)
+        return HTMLResponse(asset("phone.html"))
 
     @app.get("/_sandbox/apps")
     def sandbox_apps():
@@ -542,6 +564,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         local_app = store.one("SELECT id,app_secret FROM developer_apps WHERE access_token=?", (token,))
         app_id = local_app["id"] if local_app else "APP_LOCAL"
         app_secret = local_app["app_secret"] if local_app else settings.app_secret
+        # Re-subscribing the same callback replaces the previous registration.
+        # Without this each call added another active row and every event was
+        # delivered once per duplicate.
+        store.execute(
+            "UPDATE webhook_subscriptions SET active=0 WHERE waba_id=? AND callback_url=? AND active=1",
+            (waba_id, callback),
+        )
         store.execute(
             "INSERT INTO webhook_subscriptions(id,waba_id,callback_url,active,created_at,app_id,app_secret,verify_token) VALUES(?,?,?,?,?,?,?,?)",
             ("sub_" + uuid.uuid4().hex, waba_id, callback, 1, store.now().isoformat(), app_id, app_secret, verify_token),
