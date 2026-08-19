@@ -19,6 +19,8 @@ services:
       WABA_STATUS_DELAY: "${WABA_STATUS_DELAY:-0.05}"
       # No desktop session in a container, so disable notification popups.
       WABA_NOTIFY: "none"
+    networks:
+      - ghost-net
     volumes:
       # Keeps the database and uploaded media across restarts and rebuilds.
       - ghost-data:/data
@@ -29,6 +31,13 @@ services:
       timeout: 5s
       start_period: 10s
       retries: 3
+
+networks:
+  # Named so other stacks can join it with `external: true` and reach the
+  # sandbox as http://whatsapp-ghost:8787 instead of going out via the host.
+  ghost-net:
+    name: ghost-net
+    driver: bridge
 
 volumes:
   ghost-data:
