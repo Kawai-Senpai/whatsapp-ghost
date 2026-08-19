@@ -28,24 +28,20 @@ https://graph.facebook.com  →  http://127.0.0.1:8787
 
 ## 🖼️ Screenshots
 
-Explore the local developer console and simulated WhatsApp conversations:
+The developer console and the WhatsApp Web simulator, both served from the
+container:
 
 <table>
 <tr>
-<td width="50%"><a href="assets/screenshots/Screenshot%202026-07-15%20at%2019-57-03%20WhatsApp%20Ghost%20%C2%B7%20Developer%20Console.png"><img src="assets/screenshots/Screenshot%202026-07-15%20at%2019-57-03%20WhatsApp%20Ghost%20%C2%B7%20Developer%20Console.png" alt="WhatsApp Ghost developer console overview" width="100%"></a><br><sub>Developer console overview</sub></td>
-<td width="50%"><a href="assets/screenshots/Screenshot%202026-07-15%20at%2019-57-21%20WhatsApp%20Ghost%20%C2%B7%20Developer%20Console.png"><img src="assets/screenshots/Screenshot%202026-07-15%20at%2019-57-21%20WhatsApp%20Ghost%20%C2%B7%20Developer%20Console.png" alt="WhatsApp Ghost developer console" width="100%"></a><br><sub>Console configuration</sub></td>
+<td width="50%"><a href="assets/screenshots/console-dashboard.png"><img src="assets/screenshots/console-dashboard.png" alt="Developer console dashboard" width="100%"></a><br><sub><b>Dashboard</b> · resources, drop-in endpoint and setup tasks</sub></td>
+<td width="50%"><a href="assets/screenshots/console-credentials.png"><img src="assets/screenshots/console-credentials.png" alt="Credentials page" width="100%"></a><br><sub><b>Credentials</b> · every ID, token and secret in one place</sub></td>
 </tr>
 <tr>
-<td><a href="assets/screenshots/Screenshot%202026-07-15%20at%2019-57-30%20WhatsApp%20Ghost%20%C2%B7%20Developer%20Console.png"><img src="assets/screenshots/Screenshot%202026-07-15%20at%2019-57-30%20WhatsApp%20Ghost%20%C2%B7%20Developer%20Console.png" alt="WhatsApp Ghost console tools" width="100%"></a><br><sub>Console tools</sub></td>
-<td><a href="assets/screenshots/Screenshot%202026-07-15%20at%2019-57-39%20WhatsApp%20Ghost%20%C2%B7%20Developer%20Console.png"><img src="assets/screenshots/Screenshot%202026-07-15%20at%2019-57-39%20WhatsApp%20Ghost%20%C2%B7%20Developer%20Console.png" alt="WhatsApp Ghost developer console details" width="100%"></a><br><sub>Developer console details</sub></td>
+<td><a href="assets/screenshots/console-webhooks.png"><img src="assets/screenshots/console-webhooks.png" alt="Webhooks page" width="100%"></a><br><sub><b>Webhooks</b> · signed deliveries, attempts and replay</sub></td>
+<td><a href="assets/screenshots/console-templates.png"><img src="assets/screenshots/console-templates.png" alt="Message templates" width="100%"></a><br><sub><b>Templates</b> · approved local templates with variables</sub></td>
 </tr>
 <tr>
-<td><a href="assets/screenshots/Screenshot%202026-07-15%20at%2019-57-53%20WhatsApp%20Ghost%20%C2%B7%20Developer%20Console.png"><img src="assets/screenshots/Screenshot%202026-07-15%20at%2019-57-53%20WhatsApp%20Ghost%20%C2%B7%20Developer%20Console.png" alt="WhatsApp Ghost developer console workflow" width="100%"></a><br><sub>Console workflow</sub></td>
-<td><a href="assets/screenshots/Screenshot%202026-07-15%20at%2019-59-10%20WhatsApp%20%C2%B7%20Bob.png"><img src="assets/screenshots/Screenshot%202026-07-15%20at%2019-59-10%20WhatsApp%20%C2%B7%20Bob.png" alt="WhatsApp simulated conversation with Bob" width="100%"></a><br><sub>Simulated conversation with Bob</sub></td>
-</tr>
-<tr>
-<td><a href="assets/screenshots/Screenshot%202026-07-15%20at%2019-59-25%20WhatsApp%20%C2%B7%20Demo%20Customer.png"><img src="assets/screenshots/Screenshot%202026-07-15%20at%2019-59-25%20WhatsApp%20%C2%B7%20Demo%20Customer.png" alt="WhatsApp simulated demo customer conversation" width="100%"></a><br><sub>Demo customer conversation</sub></td>
-<td></td>
+<td colspan="2"><a href="assets/screenshots/phone-simulator.png"><img src="assets/screenshots/phone-simulator.png" alt="Phone simulator" width="100%"></a><br><sub><b>Phone simulator</b> · a real conversation with inbound media, delivery ticks and live WebSocket updates</sub></td>
 </tr>
 </table>
 
@@ -156,19 +152,36 @@ container keeps listening on 8787 internally.
 
 ### Behind a reverse proxy
 
-Terminate TLS at your proxy, forward to the container's port 8787, and set
-`WABA_BASE_URL` to the public HTTPS origin. The web console and the phone
-simulator use a WebSocket, so the proxy must pass upgrade headers. For nginx:
+A complete, syntax-checked nginx config is in
+[`examples/nginx/whatsapp-ghost.conf`](examples/nginx/whatsapp-ghost.conf).
+It covers a dedicated hostname, a commented TLS block, a bare `IP:port`
+deployment, and mounting Ghost under a subpath such as `/wa/`.
 
-```nginx
-location / {
-    proxy_pass http://127.0.0.1:8787;
-    proxy_http_version 1.1;
-    proxy_set_header Upgrade $http_upgrade;
-    proxy_set_header Connection "upgrade";
-    proxy_set_header Host $host;
-}
+The three things that actually break when proxying:
+
+| Problem | Fix |
+|---|---|
+| Phone simulator reconnects every 60s | Pass the `Upgrade`/`Connection` headers and raise `proxy_read_timeout` on `/_sandbox/clients/` |
+| Media upload fails with `413` | Raise `client_max_body_size` (the example uses `32m`) |
+| Your app downloads media from `127.0.0.1` and fails | Set `WABA_BASE_URL` to the public origin |
+
+That last one catches people out: `GET /{version}/{media-id}` returns a JSON
+body whose `url` field is built from `WABA_BASE_URL`, **not** from the incoming
+request, so proxying alone does not fix it. Verify with:
+
+```bash
+curl -s -H "Authorization: Bearer $TOKEN"      https://ghost.example.com/v25.0/<media-id> | jq -r .url
 ```
+
+The printed URL must be your public origin. If it still shows
+`http://127.0.0.1:8787`, `WABA_BASE_URL` is unset.
+
+> [!NOTE]
+> Under a subpath (`/wa/`), the Cloud API, the sandbox routes and WebSockets
+> all work, but the **browser console UI does not**: its HTML and JavaScript
+> request root-absolute paths (`/static/...`, `/_sandbox/...`) that 404 behind
+> the prefix. Use a subpath for backend integration only; give Ghost its own
+> hostname or port if people need the console.
 
 > **This is a test server with no real authentication.** Any caller holding the
 > token can send messages and read history, so keep it on a private network or
