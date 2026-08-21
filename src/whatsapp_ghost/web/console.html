@@ -347,7 +347,8 @@
   <div class="modal-back" id="webhook-modal"><form class="modal" onsubmit="createWebhook(event)">
     <div class="modal-head"><h2>Subscribe a webhook</h2><button type="button" class="x" onclick="closeModal('webhook-modal')">×</button></div>
     <div class="modal-body">
-      <label>WABA</label><select class="field" id="wh-waba"></select>
+      <div class="form-row"><div><label>WABA</label><select class="field" id="wh-waba"></select></div>
+      <div><label>Developer app / signing secret</label><select class="field" id="wh-app" required></select></div></div>
       <label>Callback URL</label><input class="field" id="wh-url" type="url" required placeholder="http://127.0.0.1:9000/webhook">
       <label>Verify token (optional)</label><input class="field" id="wh-verify" placeholder="my-project-verify-token">
       <p class="card-sub" style="margin-top:10px">When supplied, Ghost performs the real hub.challenge verification before saving. Events are signed with the app secret belonging to the token used to subscribe, so each app validates with its own secret.</p>

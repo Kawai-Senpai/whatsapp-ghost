@@ -19,6 +19,16 @@ def test_console_contains_every_primary_management_surface(client: TestClient) -
         assert f'id="{modal}"' in html
 
 
+def test_webhook_ui_selects_signing_app_and_can_unsubscribe(client: TestClient) -> None:
+    html = client.get("/console").text
+    javascript = client.get("/static/console.js").text
+
+    assert 'id="wh-app"' in html
+    assert "app.access_token" in javascript
+    assert "function unsubscribeWebhook" in javascript
+    assert "method:'DELETE'" in javascript
+
+
 def test_phone_page_has_real_chat_controls(client: TestClient) -> None:
     html = client.get("/phone").text
     assert 'id="chat-list"' in html

@@ -128,6 +128,8 @@ function renderUsers(){
 function fillSelectors(){
   const wabaOpts = state.businesses.map(b=>`<option value="${esc(b.id)}">${esc(b.name)} · ${esc(b.id)}</option>`).join('');
   $('#tpl-waba').innerHTML = wabaOpts; $('#wh-waba').innerHTML = wabaOpts;
+  $('#wh-app').innerHTML = state.apps.map(a=>`<option value="${esc(a.id)}">${esc(a.name)} · ${esc(a.id)}</option>`).join('')
+    || '<option value="">— create an app first —</option>';
   $('#sim-user').innerHTML = state.users.map(u=>`<option value="${esc(u.wa_id)}">${esc(u.display_name)} · +${esc(u.wa_id)}</option>`).join('')
     || '<option value="">— add a customer first —</option>';
   const bizNums=[]; state.businesses.forEach(b=>b.phone_numbers.forEach(p=>bizNums.push(`<option value="${esc(p.id)}">${esc(p.verified_name)} · +${esc(p.display_phone_number)}</option>`)));
@@ -166,7 +168,7 @@ async function loadWebhooks(){
   $('#wh-delivered').textContent=state.webhooks.filter(w=>w.status==='delivered').length;
   $('#wh-failed').textContent=state.webhooks.filter(w=>w.status==='failed'||w.status==='unrouted').length;
   $('#subscription-list').innerHTML=state.subscriptions.filter(s=>s.active).map(s=>`
-    <div class="subscription-row"><span class="badge">ACTIVE</span><div class="grow"><b>${esc(s.business_name||s.waba_id)}</b><small>${esc(s.callback_url)} · ${esc(s.app_name||s.app_id||'Local app')}</small></div><code>${esc(s.waba_id)}</code></div>`).join('')||'<div class="empty">No callback is subscribed. Unrouted events are still retained in history.</div>';
+    <div class="subscription-row"><span class="badge">ACTIVE</span><div class="grow"><b>${esc(s.business_name||s.waba_id)}</b><small>${esc(s.callback_url)} · ${esc(s.app_name||s.app_id||'Local app')}</small></div><code>${esc(s.waba_id)}</code><button class="btn danger small" onclick='unsubscribeWebhook(${JSON.stringify(s.waba_id)},${JSON.stringify(s.app_id||"")},${JSON.stringify(s.business_name||s.waba_id)})'>Unsubscribe</button></div>`).join('')||'<div class="empty">No callback is subscribed. Unrouted events are still retained in history.</div>';
   renderWebhookHistory();
 }
 function renderWebhookHistory(){
@@ -264,9 +266,18 @@ async function createTemplate(e){ e.preventDefault();
       body:JSON.stringify({name:$('#tpl-name').value,language:$('#tpl-language').value,category:$('#tpl-category').value,components:[{type:'BODY',text:$('#tpl-body').value}]})});
     closeModal('template-modal'); e.target.reset(); toast('Template approved locally'); loadTemplates(); }catch(x){ toast(x.message,true); } }
 async function createWebhook(e){ e.preventDefault();
-  try{ await req(`/v25.0/${$('#wh-waba').value}/subscribed_apps`,{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+state.config.access_token},
+  const app=state.apps.find(a=>a.id===$('#wh-app').value);
+  if(!app){ toast('Select a developer app for webhook signing',true); return; }
+  try{ await req(`/v25.0/${$('#wh-waba').value}/subscribed_apps`,{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+app.access_token},
       body:JSON.stringify({callback_url:$('#wh-url').value,verify_token:$('#wh-verify').value||undefined})});
     closeModal('webhook-modal'); e.target.reset(); toast('Webhook verified and subscribed'); loadWebhooks(); }catch(x){ toast(x.message,true); } }
+async function unsubscribeWebhook(waba,appId,name){
+  if(!confirm(`Unsubscribe the webhook for ${name}?\nNew events will remain unrouted until another callback is subscribed.`)) return;
+  const app=state.apps.find(a=>a.id===appId);
+  const headers=app?{Authorization:'Bearer '+app.access_token}:{};
+  try{ await req(`/v25.0/${encodeURIComponent(waba)}/subscribed_apps`,{method:'DELETE',headers}); toast('Webhook unsubscribed'); await loadWebhooks(); }
+  catch(e){ toast(e.message,true); }
+}
 async function createPhone(e){ e.preventDefault();
   try{ await req('/_sandbox/phones',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({wa_id:$('#user-phone').value,display_name:$('#user-name').value})});
     closeModal('phone-modal'); e.target.reset(); toast('Test customer created'); loadAll(); }catch(x){ toast(x.message,true); } }
