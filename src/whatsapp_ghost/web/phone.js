@@ -4,7 +4,8 @@ const state = {
   config:{}, businesses:[], users:[], templates:{},
   wa: params.get('phone') || '',      // the simulated customer (us)
   activePhone: params.get('business') || '',  // business phone_number_id we're chatting with
-  socket:null, reconnect:null, reading:false,
+  socket:null, reconnect:null, reading:false, messages:new Map(), replying:null, loadSequence:0,
+  pinned:new Set(JSON.parse(localStorage.getItem('ghost-pinned-chats') || '[]')),
 };
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -42,6 +43,34 @@ function renderTemplateBody(name, tpl){
   });
 }
 
+function sentButtonParameter(tpl, index){
+  const sent = (tpl.components || []).find(c =>
+    (c.type||'').toLowerCase() === 'button' && Number(c.index) === index);
+  return sent?.parameters?.[0] || {};
+}
+
+function renderTemplateButtons(name, tpl){
+  const key = name + '|' + (tpl.language?.code || '');
+  const definition = state.templates[key] || state.templates[name];
+  const container = (definition?.components || []).find(c => (c.type||'').toUpperCase() === 'BUTTONS');
+  return (container?.buttons || []).map((button,index)=>{
+    const type=(button.type||'').toUpperCase(), label=button.text || (type==='OTP'?'Copy code':type);
+    const parameter=sentButtonParameter(tpl,index);
+    if(type==='URL'){
+      const suffix=parameter.text ?? parameter.payload ?? '';
+      const href=String(button.url||'').replace(/\{\{1\}\}/g,encodeURIComponent(suffix));
+      if(!/^https?:\/\//i.test(href)) return '';
+      return `<a class="tpl-button" href="${esc(href)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">↗ ${esc(label)}</a>`;
+    }
+    if(type==='PHONE_NUMBER'){
+      const phone=String(button.phone_number||'').replace(/[^+\d]/g,'');
+      return `<a class="tpl-button" href="tel:${esc(phone)}" onclick="event.stopPropagation()">☎ ${esc(label)}</a>`;
+    }
+    const payload=parameter.payload || parameter.text || label;
+    return `<button type="button" class="tpl-button" data-template-reply="${esc(payload)}" data-template-label="${esc(label)}">${esc(label)}</button>`;
+  }).filter(Boolean);
+}
+
 /* Robustly extract a human-readable body from any stored payload shape. */
 function messageText(m){
   const p = m.payload || {};
@@ -59,8 +88,9 @@ function messageText(m){
     const name = tpl.name || p.name || 'template';
     // A real client shows the rendered body, not the template name, so the
     // positional {{n}} values are substituted from the sent parameters.
-    return {kind:'template', name, text: renderTemplateBody(name, tpl)};
+    return {kind:'template', name, text: renderTemplateBody(name, tpl), buttons:renderTemplateButtons(name,tpl)};
   }
+  if(t === 'button') return {kind:'text', text:p.button?.text || p.button?.payload || 'Button reply'};
   if(['image','video','audio','document','sticker'].includes(t)){
     const media = p[t] || {};
     const label = {image:'Photo',video:'Video',audio:'Audio',document:'Document',sticker:'Sticker'}[t];
@@ -135,15 +165,23 @@ function businessPhones(){
 
 function renderChatList(){
   const q = ($('#search').value||'').toLowerCase();
-  const flat = businessPhones().filter(p=>!q || p.verified_name.toLowerCase().includes(q) || p.display_phone_number.includes(q));
+  const flat = businessPhones().filter(p=>!q || p.verified_name.toLowerCase().includes(q) || p.display_phone_number.includes(q))
+    .sort((a,b)=>Number(state.pinned.has(b.id))-Number(state.pinned.has(a.id)));
   $('#chat-list').innerHTML = flat.map(p=>`
     <div class="chat-row ${p.id===state.activePhone?'active':''}" onclick="openChat('${esc(p.id)}')">
       <div class="c-avatar">${esc(initials(p.verified_name))}</div>
       <div class="c-main">
-        <div class="c-top"><span class="c-name">${esc(p.verified_name)}</span><span class="c-time" id="ct-${esc(p.id)}"></span></div>
+        <div class="c-top"><span class="c-name">${esc(p.verified_name)}</span><span class="c-row-meta">${state.pinned.has(p.id)?'<span class="c-pin" title="Pinned">📌</span>':''}<span class="c-time" id="ct-${esc(p.id)}"></span></span></div>
         <div class="c-preview" id="cp-${esc(p.id)}">+${esc(p.display_phone_number)}</div>
       </div>
     </div>`).join('') || '<div style="padding:24px;color:var(--muted);text-align:center">No business numbers yet.<br>Add one in the console.</div>';
+}
+
+function togglePin(phoneId){
+  if(state.pinned.has(phoneId)) state.pinned.delete(phoneId); else state.pinned.add(phoneId);
+  localStorage.setItem('ghost-pinned-chats',JSON.stringify([...state.pinned]));
+  if(phoneId===state.activePhone) $('#menu-pin-chat').textContent=state.pinned.has(phoneId)?'Unpin chat':'Pin chat';
+  renderChatList();
 }
 
 async function openChat(phoneId){
@@ -155,6 +193,7 @@ async function openChat(phoneId){
   $('#convo-name').textContent = p?.verified_name || 'Business';
   $('#convo-avatar').textContent = initials(p?.verified_name);
   $('#convo-status').textContent = p ? '+'+p.display_phone_number : '';
+  $('#menu-pin-chat').textContent=state.pinned.has(phoneId)?'Unpin chat':'Pin chat';
   document.querySelectorAll('.chat-row').forEach(r=>r.classList.remove('active'));
   document.querySelectorAll('.chat-row').forEach(r=>{ if(r.getAttribute('onclick')?.includes(phoneId)) r.classList.add('active'); });
   const url = new URL(location); url.searchParams.set('business', phoneId); url.searchParams.set('phone', state.wa); history.replaceState(null,'',url);
@@ -164,8 +203,11 @@ function closeChat(){ $('#app').classList.remove('chat-open'); }
 
 async function loadMessages(){
   if(!state.wa){ return; }
+  const sequence=++state.loadSequence;
   const d = await req('/_sandbox/messages?wa_id='+encodeURIComponent(state.wa)+'&phone_number_id='+encodeURIComponent(state.activePhone)+'&limit=200');
+  if(sequence!==state.loadSequence) return;
   const all = d.data.reverse();
+  state.messages = new Map(all.map(message=>[message.id,message]));
   const unread = all.filter(m=>m.direction==='outbound' && ['accepted','sent','delivered'].includes(m.status));
   if(unread.length && !state.reading){
     state.reading=true;
@@ -180,7 +222,8 @@ async function loadMessages(){
     return;
   }
   // last preview + time on chat row
-  const last = all[all.length-1];
+  const visible = all.filter(message=>message.message_type!=='reaction');
+  const last = visible[visible.length-1] || all[all.length-1];
   const lv = messageText(last);
   const lastPreview = lv.kind==='template' ? (lv.text || 'Template · '+lv.name)
     : lv.kind==='media' ? (lv.label + (lv.caption?': '+lv.caption:''))
@@ -188,26 +231,43 @@ async function loadMessages(){
   const cp=$('#cp-'+CSS.escape(state.activePhone)), ct=$('#ct-'+CSS.escape(state.activePhone));
   if(cp) cp.textContent = lastPreview.slice(0,42); if(ct) ct.textContent = fmtTime(last.created_at);
 
+  const query=($('#convo-search-input')?.value||'').trim().toLowerCase();
+  const reactions = new Map();
+  all.filter(message=>message.message_type==='reaction').forEach(message=>{
+    const reaction=message.payload?.reaction || {};
+    if(!reaction.message_id || !reaction.emoji) return;
+    const values=reactions.get(reaction.message_id)||[]; values.push(reaction.emoji); reactions.set(reaction.message_id,values);
+  });
   let lastDay = '';
-  box.innerHTML = all.map(m=>{
+  box.innerHTML = visible.map(m=>{
     // inbound = FROM customer (us) → show on right ("out"); outbound = from business → left ("in")
     const mine = m.direction === 'inbound';
     const val = messageText(m);
+    const searchable=(val.text||val.caption||val.name||'').toLowerCase();
+    if(query && !searchable.includes(query)) return '';
     const day = new Date(m.created_at).toLocaleDateString([], {weekday:'long', month:'short', day:'numeric'});
     let sep=''; if(day!==lastDay){ lastDay=day; sep=`<div class="day-sep">${esc(day)}</div>`; }
     let bodyHtml = '';
+    const contextId=m.payload?.context?.id;
+    const quoted=contextId?state.messages.get(contextId):null;
+    if(quoted){const quote=messageText(quoted);bodyHtml+=`<div class="reply-quote"><b>${quoted.direction==='inbound'?'You':'Business'}</b><span>${esc(quote.text||quote.caption||quote.name||'Message')}</span></div>`;}
     if(val.kind==='template'){
-      bodyHtml = `<span class="tpl-tag">TEMPLATE</span><span class="body">${esc(val.text || val.name)}</span>`;
+      const buttons=(val.buttons||[]).length?`<div class="tpl-buttons">${val.buttons.join('')}</div>`:'';
+      bodyHtml = `<span class="tpl-tag">TEMPLATE</span><span class="body">${esc(val.text || val.name)}</span>${buttons}`;
     } else if(val.kind==='media'){
       if(val.mtype==='image' && val.src) bodyHtml += `<img class="media-thumb" src="${esc(val.src)}" alt="">`;
       else bodyHtml += `<span class="tpl-tag">${esc(val.label).toUpperCase()}</span>`;
       if(val.caption) bodyHtml += `<span class="body">${esc(val.caption)}</span>`;
     } else {
-      bodyHtml = `<span class="body">${esc(val.text)}</span>`;
+      bodyHtml += `<span class="body">${esc(val.text)}</span>`;
     }
     const meta = `<span class="meta">${fmtTime(m.created_at)}${mine?' '+ticks(m.status):''}</span>`;
-    return `${sep}<div class="msg ${mine?'out':'in'} ${val.kind==='template'?'tpl':''}" onclick="this.classList.toggle('show-raw')">
+    const reactionHtml=(reactions.get(m.id)||[]).length?`<div class="reaction-badge">${esc((reactions.get(m.id)||[]).join(' '))}</div>`:'';
+    const actions=`<button type="button" class="msg-action-toggle" data-message-actions="${esc(m.id)}" title="Message actions" aria-label="Message actions">⌄</button><div class="msg-action-menu"><button type="button" class="reply-action" data-reply-id="${esc(m.id)}">↩ Reply</button><div class="reaction-choices">${['👍','❤️','😂','😮','😢','🙏'].map(emoji=>`<button type="button" data-react-id="${esc(m.id)}" data-emoji="${emoji}" title="React ${emoji}">${emoji}</button>`).join('')}</div></div>`;
+    return `${sep}<div class="msg ${mine?'out':'in'} ${val.kind==='template'?'tpl':''}" data-message-id="${esc(m.id)}" onclick="this.classList.toggle('show-raw')">
+      ${actions}
       ${bodyHtml}${meta}
+      ${reactionHtml}
       <div class="raw json-view">${jsonHtml(m.payload)}</div>
     </div>`;
   }).join('');
@@ -223,13 +283,73 @@ async function sendInbound(body){
   });
   await loadMessages();
 }
+$('#messages').addEventListener('click', async event=>{
+  const button=event.target.closest('[data-template-reply]');
+  if(!button) return;
+  event.stopPropagation();
+  button.disabled=true;
+  try{
+    await sendInbound({type:'button',button:{payload:button.dataset.templateReply,text:button.dataset.templateLabel}});
+  }catch(error){
+    alert(error.message);
+    button.disabled=false;
+  }
+});
+$('#messages').addEventListener('click', async event=>{
+  const toggle=event.target.closest('[data-message-actions]');
+  if(toggle){
+    event.stopPropagation();
+    const message=toggle.closest('.msg');
+    const opening=!message.classList.contains('actions-open');
+    document.querySelectorAll('.msg.actions-open').forEach(item=>item.classList.remove('actions-open'));
+    message.classList.toggle('actions-open',opening);
+    return;
+  }
+  const reply=event.target.closest('[data-reply-id]');
+  if(reply){event.stopPropagation();startReply(reply.dataset.replyId);return;}
+  const reaction=event.target.closest('[data-react-id]');
+  if(reaction){
+    event.stopPropagation();
+    await sendInbound({type:'reaction',reaction:{message_id:reaction.dataset.reactId,emoji:reaction.dataset.emoji}});
+  }
+});
+function startReply(messageId){
+  const message=state.messages.get(messageId); if(!message) return;
+  const value=messageText(message);
+  state.replying=messageId;
+  $('#reply-text').textContent=value.text||value.caption||value.name||'Message';
+  $('#reply-composer').classList.remove('hidden');
+  $('#msg-input').focus();
+}
+function cancelReply(){state.replying=null;$('#reply-composer').classList.add('hidden');$('#reply-text').textContent='';}
+$('#cancel-reply').addEventListener('click',cancelReply);
 $('#send-form').addEventListener('submit', async e=>{
   e.preventDefault();
   const input = $('#msg-input'), text = input.value.trim();
   if(!text){ return; }
   input.value='';
-  try{ await sendInbound({type:'text', text}); }catch(x){ alert(x.message); }
+  try{ await sendInbound({type:'text', text, ...(state.replying?{context:{id:state.replying}}:{})}); cancelReply(); }catch(x){ alert(x.message); }
 });
+
+const emojiChoices=['😀','😂','😍','👍','🙏','🎉','❤️','😢','😮','🔥','✅','👋'];
+$('#emoji-picker').innerHTML=emojiChoices.map(emoji=>`<button type="button" data-compose-emoji="${emoji}">${emoji}</button>`).join('');
+$('#emoji-btn').addEventListener('click',()=>$('#emoji-picker').classList.toggle('hidden'));
+$('#emoji-picker').addEventListener('click',event=>{
+  const button=event.target.closest('[data-compose-emoji]'); if(!button)return;
+  const input=$('#msg-input'),start=input.selectionStart??input.value.length,end=input.selectionEnd??start;
+  input.value=input.value.slice(0,start)+button.dataset.composeEmoji+input.value.slice(end);
+  input.focus(); input.setSelectionRange(start+button.dataset.composeEmoji.length,start+button.dataset.composeEmoji.length);
+});
+$('#new-chat-btn').addEventListener('click',()=>{$('#search').focus();$('#search').select();});
+$('#pane-menu-btn').addEventListener('click',()=>{$('#search').focus();});
+$('#convo-search-btn').addEventListener('click',()=>{$('#convo-search').classList.toggle('hidden');$('#convo-search-input').focus();});
+$('#close-convo-search').addEventListener('click',()=>{$('#convo-search-input').value='';$('#convo-search').classList.add('hidden');loadMessages();});
+$('#convo-search-input').addEventListener('input',loadMessages);
+$('#convo-menu-btn').addEventListener('click',event=>{event.stopPropagation();$('#convo-menu').classList.toggle('hidden');});
+$('#menu-pin-chat').addEventListener('click',()=>{togglePin(state.activePhone);$('#convo-menu').classList.add('hidden');});
+$('#menu-contact-info').addEventListener('click',()=>{const phone=businessPhones().find(item=>item.id===state.activePhone);alert(phone?`${phone.verified_name}\n+${phone.display_phone_number}\n${phone.business_name}`:'Contact unavailable');});
+document.addEventListener('click',event=>{if(!event.target.closest('#convo-menu')&&!event.target.closest('#convo-menu-btn'))$('#convo-menu').classList.add('hidden');});
+document.addEventListener('click',event=>{if(!event.target.closest('.msg-action-menu')&&!event.target.closest('.msg-action-toggle'))document.querySelectorAll('.msg.actions-open').forEach(item=>item.classList.remove('actions-open'));});
 
 /* ---- attach an image through the same media-ID flow as Cloud API ---- */
 $('#file-input').addEventListener('change', async e=>{

@@ -284,7 +284,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if not media or media["phone_number_id"] != phone_number_id:
                 return JSONResponse({"error": "The referenced media ID does not exist for this phone number"}, status_code=400)
         try:
-            return await engine.receive_inbound(phone_number_id, wa_id, message_type, payload)
+            return await engine.receive_inbound(
+                phone_number_id, wa_id, message_type, payload, body.get("context")
+            )
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=404)
 
@@ -400,7 +402,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             while True:
                 payload = await websocket.receive_json()
                 if payload.get("action") == "send":
-                    message = await engine.receive_inbound(payload.get("phone_number_id", "PHONE_LOCAL"), wa_id, payload.get("type", "text"), payload.get("payload", {"body": ""}))
+                    message = await engine.receive_inbound(
+                        payload.get("phone_number_id", "PHONE_LOCAL"),
+                        wa_id,
+                        payload.get("type", "text"),
+                        payload.get("payload", {"body": ""}),
+                        payload.get("context"),
+                    )
                     await websocket.send_json({"event": "accepted", "message": message})
         except WebSocketDisconnect:
             engine.listeners.get(wa_id, set()).discard(websocket)

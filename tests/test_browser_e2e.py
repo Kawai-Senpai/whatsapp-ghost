@@ -129,6 +129,148 @@ def test_console_displays_actionable_meta_error_details(page: Page, live_server:
     expect(toast).to_contain_text("Trace: LOCAL_")
 
 
+def test_phone_renders_and_activates_template_buttons(page: Page, live_server: tuple[str, Path]) -> None:
+    base_url, _ = live_server
+    headers = {"Authorization": "Bearer browser-token"}
+    created = httpx.post(
+        base_url + "/v26.0/WABA_LOCAL/message_templates",
+        headers=headers,
+        json={
+            "name": "browser_buttons",
+            "language": "en_US",
+            "category": "UTILITY",
+            "_sandbox_auto_approve": True,
+            "components": [
+                {
+                    "type": "BODY",
+                    "text": "Hello {{1}}, your trip is ready.",
+                    "example": {"body_text": [["Alex"]]},
+                },
+                {
+                    "type": "BUTTONS",
+                    "buttons": [
+                        {"type": "QUICK_REPLY", "text": "Acknowledge"},
+                        {
+                            "type": "URL",
+                            "text": "View trip",
+                            "url": "https://example.test/trips/{{1}}",
+                            "example": ["TRIP-1"],
+                        },
+                    ],
+                },
+            ],
+        },
+    )
+    assert created.status_code == 200, created.text
+    sent = httpx.post(
+        base_url + "/v26.0/PHONE_LOCAL/messages",
+        headers=headers,
+        json={
+            "messaging_product": "whatsapp",
+            "to": "15550002001",
+            "type": "template",
+            "template": {
+                "name": "browser_buttons",
+                "language": {"code": "en_US"},
+                "components": [
+                    {"type": "body", "parameters": [{"type": "text", "text": "Alex"}]},
+                    {
+                        "type": "button",
+                        "sub_type": "quick_reply",
+                        "index": "0",
+                        "parameters": [{"type": "payload", "payload": "ACKNOWLEDGE"}],
+                    },
+                    {
+                        "type": "button",
+                        "sub_type": "url",
+                        "index": "1",
+                        "parameters": [{"type": "text", "text": "TRIP-42"}],
+                    },
+                ],
+            },
+        },
+    )
+    assert sent.status_code == 200, sent.text
+
+    page.goto(base_url + "/phone?phone=15550002001&business=PHONE_LOCAL")
+    message = page.locator(".msg.tpl").last
+    expect(message.locator(".body")).to_have_text("Hello Alex, your trip is ready.")
+    expect(message.get_by_role("button", name="Acknowledge")).to_be_visible()
+    link = message.get_by_role("link", name="View trip")
+    expect(link).to_have_attribute("href", "https://example.test/trips/TRIP-42")
+
+    message.get_by_role("button", name="Acknowledge").click()
+    expect(page.locator(".msg.out .body").last).to_have_text("Acknowledge")
+
+
+def test_phone_pin_search_emoji_reply_reaction_and_normal_messages(
+    page: Page, live_server: tuple[str, Path]
+) -> None:
+    base_url, _ = live_server
+    headers = {"Authorization": "Bearer browser-token"}
+    page.goto(base_url + "/phone?phone=15550002001&business=PHONE_LOCAL")
+
+    page.locator("#msg-input").fill("Hello from customer")
+    page.locator("#send-btn").click()
+    expect(page.locator(".msg.out .body").last).to_have_text("Hello from customer")
+
+    response = httpx.post(
+        base_url + "/v26.0/PHONE_LOCAL/messages",
+        headers=headers,
+        json={
+            "messaging_product": "whatsapp",
+            "to": "15550002001",
+            "type": "text",
+            "text": {"body": "Normal business response"},
+        },
+    )
+    assert response.status_code == 200, response.text
+    page.reload()
+    business_message = page.locator(".msg.in", has_text="Normal business response").last
+    expect(business_message).to_be_visible()
+
+    page.locator("#convo-menu-btn").click()
+    page.locator("#menu-pin-chat").click()
+    expect(page.locator(".chat-row .c-pin")).to_be_visible()
+    page.reload()
+    expect(page.locator(".chat-row .c-pin")).to_be_visible()
+
+    page.locator("#emoji-btn").click()
+    page.locator('[data-compose-emoji="😀"]').click()
+    expect(page.locator("#msg-input")).to_have_value("😀")
+    page.locator("#send-btn").click()
+    expect(page.locator(".msg.out .body").last).to_have_text("😀")
+
+    business_message = page.locator(".msg.in", has_text="Normal business response").last
+    business_message.hover()
+    business_message.locator(".msg-action-toggle").click()
+    business_message.get_by_role("button", name="Reply").click()
+    expect(page.locator("#reply-composer")).to_be_visible()
+    page.locator("#msg-input").fill("Reply from customer")
+    page.locator("#send-btn").click()
+    stored = httpx.get(
+        base_url + "/_sandbox/messages",
+        params={"wa_id": "15550002001", "phone_number_id": "PHONE_LOCAL", "limit": 20},
+    ).json()["data"]
+    stored_reply = next(item for item in stored if item["payload"].get("text", {}).get("body") == "Reply from customer")
+    assert stored_reply["payload"].get("context", {}).get("id")
+    reply = page.locator(".msg.out", has_text="Reply from customer").last
+    expect(reply.locator(".reply-quote")).to_contain_text("Normal business response")
+
+    business_message = page.locator(".msg.in", has_text="Normal business response").last
+    business_message.hover()
+    business_message.locator(".msg-action-toggle").click()
+    business_message.locator('[data-emoji="👍"]').click()
+    expect(business_message.locator(".reaction-badge")).to_have_text("👍")
+
+    page.locator("#convo-search-btn").click()
+    page.locator("#convo-search-input").fill("Normal business")
+    expect(page.locator(".msg")).to_have_count(1)
+    expect(page.locator(".msg .body")).to_have_text("Normal business response")
+    page.locator("#close-convo-search").click()
+    expect(page.locator(".msg").nth(1)).to_be_visible()
+
+
 def test_browser_phone_text_order_media_persistence_and_read_ticks(
     page: Page, live_server: tuple[str, Path], tmp_path: Path
 ) -> None:
@@ -172,7 +314,8 @@ def test_browser_phone_text_order_media_persistence_and_read_ticks(
         })
         assert sent.status_code == 200
 
-    expect(page.locator(".msg.out").first.locator(".ticks.read")).to_have_count(1)
+    first_bubble = page.locator(".msg.out", has_text="First browser message")
+    expect(first_bubble.locator(".ticks.read")).to_have_count(1)
     expect(page.locator(".msg.in .body").last).to_have_text("Reply from the business API")
     deadline = time.monotonic() + 2
     while time.monotonic() < deadline:

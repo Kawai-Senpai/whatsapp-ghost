@@ -85,6 +85,8 @@ def test_phone_client_renders_template_bodies_with_variables(client: TestClient)
     # substitutes {{n}} and falls back through currency/date_time fallback values
     assert "fallback_value" in phone_js
     assert "val.text || val.name" in phone_js
+    assert "function renderTemplateButtons" in phone_js
+    assert "data-template-reply" in phone_js
 
 
 def test_console_exposes_a_credentials_page(client: TestClient) -> None:

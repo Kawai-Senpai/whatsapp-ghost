@@ -23,8 +23,8 @@
       <header class="pane-head">
         <div class="me-avatar" id="me-avatar">Y</div>
         <div class="spacer"></div>
-        <button class="icon-btn" title="New chat"><svg><use href="#p-chat"/></svg></button>
-        <button class="icon-btn" title="Menu"><svg><use href="#p-menu"/></svg></button>
+        <button class="icon-btn" id="new-chat-btn" title="New chat"><svg><use href="#p-chat"/></svg></button>
+        <button class="icon-btn" id="pane-menu-btn" title="Menu"><svg><use href="#p-menu"/></svg></button>
       </header>
       <div class="search-wrap">
         <div class="search-box"><svg><use href="#p-search"/></svg><input id="search" placeholder="Search or start new chat"></div>
@@ -42,12 +42,15 @@
           <div class="ch-status" id="convo-status">click a message to inspect its payload</div>
         </div>
         <div class="spacer"></div>
-        <button class="icon-btn" title="Search"><svg><use href="#p-search"/></svg></button>
-        <button class="icon-btn" title="Menu"><svg><use href="#p-menu"/></svg></button>
+        <button class="icon-btn" id="convo-search-btn" title="Search"><svg><use href="#p-search"/></svg></button>
+        <button class="icon-btn" id="convo-menu-btn" title="Menu"><svg><use href="#p-menu"/></svg></button>
       </header>
+      <div class="convo-tools hidden" id="convo-search"><input id="convo-search-input" placeholder="Search this conversation"><button type="button" id="close-convo-search" aria-label="Close search">×</button></div>
+      <div class="convo-menu hidden" id="convo-menu"><button type="button" id="menu-pin-chat">Pin chat</button><button type="button" id="menu-contact-info">Contact info</button></div>
       <div class="messages" id="messages"></div>
+      <div class="reply-composer hidden" id="reply-composer"><div><b>Replying to</b><span id="reply-text"></span></div><button type="button" id="cancel-reply" aria-label="Cancel reply">×</button></div>
       <footer class="composer">
-        <button class="icon-btn" title="Emoji"><svg><use href="#p-emoji"/></svg></button>
+        <button class="icon-btn" id="emoji-btn" title="Emoji"><svg><use href="#p-emoji"/></svg></button>
         <button class="icon-btn" title="Attach image" onclick="document.getElementById('file-input').click()"><svg><use href="#p-attach"/></svg></button>
         <input type="file" id="file-input" accept="image/*" hidden>
         <form id="send-form">
@@ -55,6 +58,7 @@
         </form>
         <button class="send-btn" id="send-btn" title="Send" onclick="document.getElementById('send-form').requestSubmit()"><svg><use href="#p-send"/></svg></button>
       </footer>
+      <div class="emoji-picker hidden" id="emoji-picker"></div>
     </section>
 
     <!-- Intro screen (no chat selected) -->

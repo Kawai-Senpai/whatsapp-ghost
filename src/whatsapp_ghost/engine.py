@@ -146,7 +146,14 @@ class Engine:
         if message["direction"] == "outbound":
             await self.broadcast(message["recipient_id"], {"event": "status", "message_id": message_id, "status": status})
 
-    async def receive_inbound(self, phone_id: str, wa_id: str, message_type: str, payload: dict[str, Any]) -> dict[str, Any]:
+    async def receive_inbound(
+        self,
+        phone_id: str,
+        wa_id: str,
+        message_type: str,
+        payload: dict[str, Any],
+        context: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         wa_id = normalize_phone(wa_id)
         phone = self.phone(phone_id)
         if not phone or not self.user(wa_id):
@@ -163,6 +170,8 @@ class Engine:
         now = self.store.now()
         expires = now + timedelta(hours=24)
         normalized = {"from": wa_id, "id": message_id, "timestamp": str(int(now.timestamp())), "type": message_type, message_type: payload}
+        if context and context.get("id"):
+            normalized["context"] = {"id": str(context["id"])}
         self.store.execute(
             "INSERT INTO messages VALUES(?,?,?,?,?,?,?,?,?,?,?,NULL)",
             (message_id, conversation_id, "inbound", wa_id, phone_id, message_type, json.dumps(normalized), "v25.0", "delivered", now.isoformat(), now.isoformat()),
