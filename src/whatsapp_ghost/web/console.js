@@ -8,10 +8,20 @@ const initials = s => (s||'?').trim().slice(0,2).toUpperCase();
 async function req(url, options={}) {
   const r = await fetch(url, options);
   let data; try { data = await r.json(); } catch { data = { error: await r.text() }; }
-  if (!r.ok) throw new Error(data?.error?.error_data?.details || data?.error || data?.detail || r.statusText);
+  if (!r.ok) {
+    const graph=data?.error;
+    if(graph && typeof graph==='object'){
+      const title=graph.error_user_title||graph.message||'Request failed';
+      const detail=graph.error_user_msg||graph.error_data?.details||graph.message||r.statusText;
+      const identity=[graph.code!=null?`code ${graph.code}`:'',graph.error_subcode!=null?`subcode ${graph.error_subcode}`:''].filter(Boolean).join(', ');
+      const trace=graph.fbtrace_id?`Trace: ${graph.fbtrace_id}`:'';
+      throw new Error([`${title}: ${detail}`,identity&&`(${identity})`,trace].filter(Boolean).join('\n'));
+    }
+    throw new Error(String(data?.error||data?.detail||r.statusText));
+  }
   return data;
 }
-function toast(msg, bad=false){ const e=$('#toast'); e.textContent=msg; e.classList.toggle('bad',bad); e.classList.add('show'); clearTimeout(e._t); e._t=setTimeout(()=>e.classList.remove('show'),2600); }
+function toast(msg, bad=false){ const e=$('#toast'); e.textContent=msg; e.classList.toggle('bad',bad); e.classList.add('show'); clearTimeout(e._t); e._t=setTimeout(()=>e.classList.remove('show'),bad?10000:2600); }
 function copyText(v){ navigator.clipboard.writeText(v); toast('Copied to clipboard'); }
 function openModal(id){ $('#'+id).classList.add('open'); }
 function closeModal(id){ $('#'+id).classList.remove('open'); }
@@ -262,8 +272,13 @@ async function saveBusiness(e){ e.preventDefault();
 
 async function createTemplate(e){ e.preventDefault();
   try{ const w=$('#tpl-waba').value;
+    const text=$('#tpl-body').value;
+    const indexes=[...text.matchAll(/\{\{(\d+)\}\}/g)].map(m=>Number(m[1]));
+    const sampleCount=indexes.length?Math.max(...indexes):0;
+    const bodyComponent={type:'BODY',text};
+    if(sampleCount) bodyComponent.example={body_text:[[...Array(sampleCount)].map((_,i)=>`sample_${i+1}`)]};
     await req(`/v25.0/${w}/message_templates`,{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+state.config.access_token},
-      body:JSON.stringify({name:$('#tpl-name').value,language:$('#tpl-language').value,category:$('#tpl-category').value,components:[{type:'BODY',text:$('#tpl-body').value}]})});
+      body:JSON.stringify({name:$('#tpl-name').value,language:$('#tpl-language').value,category:$('#tpl-category').value,components:[bodyComponent],_sandbox_auto_approve:true})});
     closeModal('template-modal'); e.target.reset(); toast('Template approved locally'); loadTemplates(); }catch(x){ toast(x.message,true); } }
 async function createWebhook(e){ e.preventDefault();
   const app=state.apps.find(a=>a.id===$('#wh-app').value);

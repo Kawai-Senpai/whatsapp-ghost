@@ -308,7 +308,9 @@ DELETE /v25.0/{template-id}
 DELETE /v25.0/{waba-id}/message_templates?name={name}
 ```
 
-New local templates auto-approve. Send `"_sandbox_auto_approve": false` during creation to test `PENDING`; that underscore-prefixed field is a simulator extension.
+Like Meta, newly submitted local templates return `PENDING` by default. Send
+`"_sandbox_auto_approve": true` during creation when a test needs immediate
+approval; that underscore-prefixed field is a simulator-only extension.
 
 ## ⏱️ Time travel and multiple phones
 

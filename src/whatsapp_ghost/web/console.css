@@ -125,6 +125,7 @@ svg.ico{width:20px;height:20px;stroke:currentColor;fill:none;stroke-width:1.8;st
 }
 .side-link.active .ico{color:var(--fb-blue)}
 .side-foot{margin-top:18px;padding:12px;border-radius:var(--radius);background:var(--meta-bg);color:var(--muted);font-size:12px}
+.side-foot .credit{display:inline-block;margin-top:8px}.side-foot .credit a{color:var(--fb-blue-dark);font-weight:700}
 .dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--green);margin-right:6px}
 
 /* ---- Content ---- */
@@ -232,7 +233,7 @@ textarea.field{min-height:88px;resize:vertical}
 .mini-hint{display:flex;gap:12px;align-items:center;padding:14px;border:1px solid var(--line);border-radius:var(--radius);margin-bottom:12px}
 
 /* ---- Toast ---- */
-.toast{position:fixed;left:50%;bottom:28px;transform:translate(-50%,80px);z-index:80;background:#1c2128;color:#fff;padding:12px 18px;border-radius:8px;box-shadow:0 12px 40px rgba(0,0,0,.3);opacity:0;transition:.25s;font-weight:500}
+.toast{position:fixed;left:50%;bottom:28px;transform:translate(-50%,80px);z-index:80;background:#1c2128;color:#fff;padding:12px 18px;border-radius:8px;box-shadow:0 12px 40px rgba(0,0,0,.3);opacity:0;transition:.25s;font-weight:500;white-space:pre-line;max-width:min(680px,calc(100vw - 32px));overflow-wrap:anywhere}
 .toast.show{transform:translate(-50%,0);opacity:1}
 .toast.bad{background:var(--danger)}
 

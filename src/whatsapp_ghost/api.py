@@ -22,6 +22,7 @@ from .config import Settings
 from .db import Store
 from .engine import Engine, normalize_phone
 from .errors import graph_error
+from .template_validation import validate_template
 from .web_console import asset, WEB_DIR
 
 
@@ -517,12 +518,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def create_template(version: str, waba_id: str, body: dict[str, Any] = Body(...)):
         if not store.one("SELECT id FROM business_accounts WHERE id=?", (waba_id,)):
             return graph_error(100, "WhatsApp Business Account does not exist.", status_code=404)
-        for field in ("name", "language", "category", "components"):
-            if field not in body:
-                return graph_error(131008, f"Parameter {field} is required.")
+        if validation_error := validate_template(body):
+            return graph_error(
+                100,
+                validation_error.details,
+                error_subcode=validation_error.subcode,
+                user_title=validation_error.title,
+            )
         template_id = str(secrets.randbelow(9_000_000_000_000_000) + 1_000_000_000_000_000)
         now = store.now().isoformat()
-        status = "APPROVED" if body.get("_sandbox_auto_approve", True) else "PENDING"
+        status = "APPROVED" if body.get("_sandbox_auto_approve") is True else "PENDING"
         try:
             store.execute("INSERT INTO templates VALUES(?,?,?,?,?,?,?,?,?)", (template_id, waba_id, body["name"], body["language"], body["category"].upper(), status, json.dumps(body["components"]), now, now))
         except Exception:

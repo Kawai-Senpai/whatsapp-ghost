@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -108,6 +109,26 @@ def test_console_can_add_second_sender_and_populates_live_guide(page: Page, live
     expect(page.locator("#guide-send-code")).to_contain_text("browser-token")
 
 
+def test_console_displays_actionable_meta_error_details(page: Page, live_server: tuple[str, Path]) -> None:
+    base_url, _ = live_server
+    page.goto(base_url + "/console")
+    credit = page.locator('.side-foot a[href="https://ranitbhowmick.com"]')
+    expect(credit).to_have_text("Ranit Bhowmick")
+    expect(credit).to_have_attribute("rel", "noopener noreferrer")
+    page.locator('.side-link[data-page="templates"]').click()
+    page.get_by_role("button", name="New template").click()
+    page.locator("#tpl-name").fill("Invalid-Template")
+    page.locator("#tpl-body").fill("A valid body.")
+    page.locator("#template-modal").get_by_role("button", name="Create & approve").click()
+
+    toast = page.locator("#toast")
+    expect(toast).to_have_class(re.compile(r"\bbad\b"))
+    expect(toast).to_contain_text("Invalid message template")
+    expect(toast).to_contain_text("lowercase letters, numbers, or underscores")
+    expect(toast).to_contain_text("code 100")
+    expect(toast).to_contain_text("Trace: LOCAL_")
+
+
 def test_browser_phone_text_order_media_persistence_and_read_ticks(
     page: Page, live_server: tuple[str, Path], tmp_path: Path
 ) -> None:
@@ -179,4 +200,3 @@ def test_phone_can_switch_between_senders_without_mixing_history(page: Page, liv
     page.get_by_text("Ghost Demo", exact=True).click()
     expect(page.locator("#messages")).to_contain_text("First browser message")
     expect(page.locator("#messages")).not_to_contain_text("Sales-only conversation")
-
