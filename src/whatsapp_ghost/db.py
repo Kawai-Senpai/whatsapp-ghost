@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
+from .identity import generated_color
+
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
@@ -26,11 +28,13 @@ CREATE TABLE IF NOT EXISTS phone_numbers (
 );
 CREATE TABLE IF NOT EXISTS simulated_users (
   wa_id TEXT PRIMARY KEY, display_name TEXT NOT NULL, online INTEGER NOT NULL DEFAULT 1,
-  blocked INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
+  blocked INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL,
+  color TEXT, auto_created INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS conversations (
   id TEXT PRIMARY KEY, phone_number_id TEXT NOT NULL, user_wa_id TEXT NOT NULL,
   last_user_message_at TEXT, service_window_expires_at TEXT, created_at TEXT NOT NULL,
+  pinned INTEGER NOT NULL DEFAULT 0, pinned_at TEXT,
   UNIQUE(phone_number_id, user_wa_id)
 );
 CREATE TABLE IF NOT EXISTS messages (
@@ -99,6 +103,19 @@ class Store:
             for column in ("app_id", "app_secret", "verify_token"):
                 if column not in subscription_columns:
                     db.execute(f"ALTER TABLE webhook_subscriptions ADD COLUMN {column} TEXT")
+            user_columns = {row[1] for row in db.execute("PRAGMA table_info(simulated_users)")}
+            if "color" not in user_columns:
+                db.execute("ALTER TABLE simulated_users ADD COLUMN color TEXT")
+            if "auto_created" not in user_columns:
+                db.execute("ALTER TABLE simulated_users ADD COLUMN auto_created INTEGER NOT NULL DEFAULT 0")
+            # Backfill colors so pre-upgrade rows render like autocreated ones.
+            for row in db.execute("SELECT wa_id FROM simulated_users WHERE color IS NULL OR color=''"):
+                db.execute("UPDATE simulated_users SET color=? WHERE wa_id=?", (generated_color(row[0]), row[0]))
+            conversation_columns = {row[1] for row in db.execute("PRAGMA table_info(conversations)")}
+            if "pinned" not in conversation_columns:
+                db.execute("ALTER TABLE conversations ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
+            if "pinned_at" not in conversation_columns:
+                db.execute("ALTER TABLE conversations ADD COLUMN pinned_at TEXT")
             delivery_columns = {row[1] for row in db.execute("PRAGMA table_info(webhook_deliveries)")}
             if "last_response_body" not in delivery_columns:
                 db.execute("ALTER TABLE webhook_deliveries ADD COLUMN last_response_body BLOB")
@@ -112,7 +129,10 @@ class Store:
                 "INSERT OR IGNORE INTO phone_numbers(id,waba_id,display_phone_number,verified_name,created_at) VALUES(?,?,?,?,?)",
                 ("PHONE_LOCAL", "WABA_LOCAL", "15550001000", "Ghost Demo", now),
             )
-            db.execute("INSERT OR IGNORE INTO simulated_users VALUES(?,?,?,?,?)", ("15550002001", "Demo Customer", 1, 0, now))
+            db.execute(
+                "INSERT OR IGNORE INTO simulated_users(wa_id,display_name,online,blocked,created_at,color,auto_created) VALUES(?,?,?,?,?,?,?)",
+                ("15550002001", "Demo Customer", 1, 0, now, generated_color("15550002001"), 0),
+            )
             components = json.dumps([{"type": "BODY", "text": "Hello {{1}}, welcome to WhatsApp Ghost!"}])
             db.execute(
                 "INSERT OR IGNORE INTO templates VALUES(?,?,?,?,?,?,?,?,?)",

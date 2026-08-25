@@ -17,7 +17,28 @@ from whatsapp_ghost.config import Settings
 
 @pytest.fixture
 def settings(tmp_path: Path) -> Settings:
-    return Settings(tmp_path, "http://testserver", "token", "secret", "verify", "strict", 0.001, "none")
+    return Settings(
+        data_dir=tmp_path,
+        base_url="http://testserver",
+        access_token="token",
+        app_secret="secret",
+        verify_token="verify",
+        mode="strict",
+        status_delay_seconds=0.001,
+        notify="none",
+        auto_create_recipients=True,
+    )
+
+
+@pytest.fixture
+def no_autocreate_settings(settings: Settings) -> Settings:
+    return replace(settings, auto_create_recipients=False)
+
+
+@pytest.fixture
+def no_autocreate_client(no_autocreate_settings: Settings) -> Iterator[TestClient]:
+    with TestClient(create_app(no_autocreate_settings)) as test_client:
+        yield test_client
 
 
 @pytest.fixture

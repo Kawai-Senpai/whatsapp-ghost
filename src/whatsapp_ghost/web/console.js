@@ -1,5 +1,5 @@
 /* ===== WhatsApp Ghost developer console ===== */
-const state = { config:{}, apps:[], businesses:[], users:[], messages:[], webhooks:[], subscriptions:[], templates:[] };
+const state = { config:{}, apps:[], businesses:[], users:[], messages:[], webhooks:[], subscriptions:[], templates:[], hookPage:1 };
 let guideLanguage = 'curl';
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -124,14 +124,66 @@ function renderBusinesses(){
 }
 
 /* ---- render: test users ---- */
+function userMatches(u, q){
+  if(!q) return true;
+  return (u.display_name + ' ' + u.wa_id).toLowerCase().includes(q);
+}
+
 function renderUsers(){
-  $('#user-list').innerHTML = state.users.map(u=>`
-    <div class="item"><div class="item-head">
-      <div class="avatar wa">${esc(initials(u.display_name))}</div>
-      <div class="grow"><b>${esc(u.display_name)}</b><small>+${esc(u.wa_id)}</small></div>
-      <button class="btn wa small" onclick="openPhoneTabFor('${esc(u.wa_id)}')"><svg><use href="#i-open"/></svg>Open</button>
-      <button class="btn danger small" title="Delete customer" onclick="deletePhone('${esc(u.wa_id)}','${esc(u.display_name)}')">Delete</button>
-    </div></div>`).join('') || '<div class="empty">No test customers yet.</div>';
+  const q = (state.userFilter || '').trim().toLowerCase();
+  const all = state.users;
+  const shown = all.filter(u => userMatches(u, q));
+  const counter = $('#user-count');
+  if(counter) counter.textContent = q ? `${shown.length} of ${all.length}` : `${all.length}`;
+  const filterWrap = $('#user-filter-wrap');
+  // The list is unbounded once autocreate is on, so only offer search when it helps.
+  if(filterWrap) filterWrap.hidden = all.length < 8;
+
+  if(!all.length){
+    $('#user-list').innerHTML = '<div class="empty">No test customers yet. Send a message to any number and it appears here.</div>';
+    return;
+  }
+  if(!shown.length){
+    $('#user-list').innerHTML = `<div class="empty">No customers match "${esc(q)}".</div>`;
+    return;
+  }
+  $('#user-list').innerHTML = shown.map(u=>{
+    const color = u.color || '#25D366';
+    const name = esc(u.display_name);
+    return `
+    <div class="item user-item"><div class="user-row">
+      <div class="avatar wa" style="background:${esc(color)}1f;color:${esc(color)}">${esc(initials(u.display_name))}</div>
+      <div class="grow user-id">
+        <b title="${name}">${name}${u.auto_created ? '<span class="badge gray" title="Created automatically on first message">auto</span>' : ''}</b>
+        <small title="+${esc(u.wa_id)}">+${esc(u.wa_id)}</small>
+      </div>
+      <div class="user-actions">
+        <button class="btn wa small" onclick="openPhoneTabFor('${esc(u.wa_id)}')"><svg><use href="#i-open"/></svg>Open</button>
+        <button class="btn secondary small icon-only" title="Rename or recolor ${name}" aria-label="Rename or recolor ${name}" onclick="editPhone('${esc(u.wa_id)}')"><svg><use href="#i-edit"/></svg></button>
+        <button class="btn danger small icon-only" title="Delete ${name}" aria-label="Delete ${name}" onclick="deletePhone('${esc(u.wa_id)}','${name}')"><svg><use href="#i-trash"/></svg></button>
+      </div>
+    </div></div>`;
+  }).join('');
+}
+
+function setUserFilter(value){ state.userFilter = value; renderUsers(); }
+
+async function editPhone(wa){
+  const user = state.users.find(u => u.wa_id === wa);
+  if(!user) return;
+  const name = prompt(`Display name for +${wa}`, user.display_name);
+  if(name === null) return;
+  const color = prompt('Accent color (hex, e.g. #25D366)', user.color || '#25D366');
+  if(color === null) return;
+  const trimmed = color.trim();
+  if(!/^#[0-9a-fA-F]{6}$/.test(trimmed)){ toast('Color must be a 6-digit hex value like #25D366'); return; }
+  try{
+    await req(`/_sandbox/phones/${encodeURIComponent(wa)}`,{
+      method:'PATCH', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({display_name:name.trim() || user.display_name, color:trimmed})
+    });
+    toast('Customer updated'); loadAll();
+  }catch(e){ toast('Could not update customer'); }
 }
 
 /* ---- selectors ---- */
@@ -176,24 +228,125 @@ async function loadWebhooks(){
   $('#wh-subscriptions').textContent=state.subscriptions.filter(s=>s.active).length;
   $('#wh-total').textContent=state.webhooks.length;
   $('#wh-delivered').textContent=state.webhooks.filter(w=>w.status==='delivered').length;
-  $('#wh-failed').textContent=state.webhooks.filter(w=>w.status==='failed'||w.status==='unrouted').length;
+  $('#wh-failed').textContent=state.webhooks.filter(w=>w.status==='failed').length;
+  const unrouted=$('#wh-unrouted'); if(unrouted) unrouted.textContent=state.webhooks.filter(w=>w.status==='unrouted').length;
+  populateWebhookFilters();
   $('#subscription-list').innerHTML=state.subscriptions.filter(s=>s.active).map(s=>`
     <div class="subscription-row"><span class="badge">ACTIVE</span><div class="grow"><b>${esc(s.business_name||s.waba_id)}</b><small>${esc(s.callback_url)} · ${esc(s.app_name||s.app_id||'Local app')}</small></div><code>${esc(s.waba_id)}</code><button class="btn danger small" onclick='unsubscribeWebhook(${JSON.stringify(s.waba_id)},${JSON.stringify(s.app_id||"")},${JSON.stringify(s.business_name||s.waba_id)})'>Unsubscribe</button></div>`).join('')||'<div class="empty">No callback is subscribed. Unrouted events are still retained in history.</div>';
+  renderUnsubscribedWarning();
   renderWebhookHistory();
 }
-function renderWebhookHistory(){
+
+function renderUnsubscribedWarning(){
+  const box=$('#hook-unsubscribed'); if(!box) return;
+  const subscribed=new Set((state.subscriptions||[]).map(s=>s.waba_id));
+  const missing=(state.businesses||[]).filter(b=>!subscribed.has(b.id));
+  if(!missing.length){ box.hidden=true; box.innerHTML=''; return; }
+  box.hidden=false;
+  box.innerHTML=`<b>${missing.length} account${missing.length>1?'s have':' has'} no subscribed callback.</b>
+    Events for ${missing.length>1?'them':'it'} are stored as <span class="badge amber">UNROUTED</span> and never sent.
+    <div class="unsub-list">${missing.map(b=>`<span class="unsub-chip">${esc(b.name)} · ${esc(b.id)}</span>`).join('')}</div>`;
+}
+function webhookFacets(w){
+  const payload=w.request_body||{}, change=payload.entry?.[0]?.changes?.[0], value=change?.value||{};
+  return {
+    payload, value,
+    waba: payload.entry?.[0]?.id || '',
+    phone: value.metadata?.phone_number_id || '',
+    kind: value.messages?.[0] ? 'inbound' : value.statuses?.[0] ? 'status' : ''
+  };
+}
+
+function populateWebhookFilters(){
+  const wabas=new Set(), phones=new Set();
+  state.webhooks.forEach(w=>{ const f=webhookFacets(w); if(f.waba) wabas.add(f.waba); if(f.phone) phones.add(f.phone); });
+  const fill=(sel,values,label)=>{
+    const el=$(sel); if(!el) return;
+    const current=el.value;
+    el.innerHTML=`<option value="all">${label}</option>`+[...values].sort().map(v=>`<option value="${esc(v)}">${esc(v)}</option>`).join('');
+    if([...values].includes(current)) el.value=current;
+  };
+  fill('#hook-waba', wabas, 'All accounts');
+  fill('#hook-phone', phones, 'All numbers');
+}
+
+function clearWebhookFilters(){
+  ['#hook-filter','#hook-waba','#hook-phone','#hook-event'].forEach(id=>{ const el=$(id); if(el) el.value='all'; });
+  const search=$('#hook-search'); if(search) search.value='';
+  renderWebhookHistory(1);
+}
+
+const STATUS_ORDER={failed:0,pending:1,unrouted:2,delivered:3};
+
+function sortWebhooks(items,mode){
+  const byNewest=(a,b)=>new Date(b.created_at)-new Date(a.created_at);
+  if(mode==='oldest') return items.sort((a,b)=>new Date(a.created_at)-new Date(b.created_at));
+  if(mode==='attempts') return items.sort((a,b)=>(b.attempt_count||0)-(a.attempt_count||0)||byNewest(a,b));
+  if(mode==='status') return items.sort((a,b)=>
+    (STATUS_ORDER[a.status]??9)-(STATUS_ORDER[b.status]??9)||byNewest(a,b));
+  return items.sort(byNewest);
+}
+
+function renderPager(total,page,size){
+  const pager=$('#hook-pager'); if(!pager) return;
+  const pages=Math.max(1,Math.ceil(total/size));
+  if(pages<=1){ pager.innerHTML=''; return; }
+  const btn=(label,target,disabled,current)=>
+    `<button class="btn secondary small${current?' current':''}" ${disabled?'disabled':''} onclick="renderWebhookHistory(${target})">${label}</button>`;
+  // Window the page numbers so 40 pages do not render 40 buttons.
+  const win=[]; const from=Math.max(1,page-2), to=Math.min(pages,page+2);
+  if(from>1) win.push(btn('1',1,false,page===1), from>2?'<span class="pager-gap">…</span>':'');
+  for(let i=from;i<=to;i++) win.push(btn(String(i),i,false,i===page));
+  if(to<pages) win.push(to<pages-1?'<span class="pager-gap">…</span>':'', btn(String(pages),pages,false,page===pages));
+  pager.innerHTML=`${btn('Prev',page-1,page<=1)}${win.join('')}${btn('Next',page+1,page>=pages)}`
+    +`<span class="pager-info">Page ${page} of ${pages}</span>`;
+}
+
+function renderWebhookHistory(page){
   const filter=$('#hook-filter')?.value||'all', query=($('#hook-search')?.value||'').toLowerCase();
-  const items=state.webhooks.filter(w=>(filter==='all'||w.status===filter)&&(!query||JSON.stringify(w).toLowerCase().includes(query)));
-  $('#webhook-list').innerHTML=items.map(w=>{
-    const payload=w.request_body||{}, change=payload.entry?.[0]?.changes?.[0], value=change?.value||{};
-    const content=value.messages?.[0] ? `Inbound ${value.messages[0].type||'message'}` : value.statuses?.[0] ? `Status: ${value.statuses[0].status}` : w.event_type;
-    const waba=payload.entry?.[0]?.id||'—', phone=value.metadata?.phone_number_id||'—';
+  const wabaFilter=$('#hook-waba')?.value||'all', phoneFilter=$('#hook-phone')?.value||'all';
+  const eventFilter=$('#hook-event')?.value||'all';
+  const active = filter!=='all'||wabaFilter!=='all'||phoneFilter!=='all'||eventFilter!=='all'||!!query;
+  const items=state.webhooks.filter(w=>{
+    const f=webhookFacets(w);
+    if(filter!=='all' && w.status!==filter) return false;
+    if(wabaFilter!=='all' && f.waba!==wabaFilter) return false;
+    if(phoneFilter!=='all' && f.phone!==phoneFilter) return false;
+    if(eventFilter!=='all' && f.kind!==eventFilter) return false;
+    if(query && !JSON.stringify(w).toLowerCase().includes(query)) return false;
+    return true;
+  });
+  const counter=$('#hook-count');
+  if(counter) counter.textContent = active ? `${items.length} of ${state.webhooks.length}` : `${state.webhooks.length}`;
+  const clear=$('#hook-clear'); if(clear) clear.hidden = !active;
+
+  sortWebhooks(items, $('#hook-sort')?.value||'newest');
+  const size=parseInt($('#hook-size')?.value||'25',10);
+  const pages=Math.max(1,Math.ceil(items.length/size));
+  state.hookPage = Math.min(Math.max(1, page||state.hookPage||1), pages);
+  const start=(state.hookPage-1)*size;
+  const pageItems=items.slice(start,start+size);
+  renderPager(items.length,state.hookPage,size);
+  const list=$('#webhook-list'); if(list) list.scrollTop=0;
+
+  $('#webhook-list').innerHTML=pageItems.map(w=>{
+    const f=webhookFacets(w), payload=f.payload, value=f.value;
+    // The event's own subject (an inbound message, or a message-status update)
+    // is distinct from whether OUR delivery to the subscriber succeeded.
+    const subject=value.messages?.[0] ? `Inbound ${value.messages[0].type||'message'}`
+      : value.statuses?.[0] ? `Message ${value.statuses[0].status}` : (w.event_type||'Event');
+    const waba=f.waba||'—', phone=f.phone||'—';
     const badge=w.status==='delivered'?'':w.status==='failed'?'red':'amber';
-    const attempts=(w.attempts||[]).map(a=>`<div class="attempt-row"><span class="badge ${a.error?'red':''}">#${a.attempt_number}</span><div><b>${a.status_code??'Network error'}</b><small>${new Date(a.requested_at).toLocaleString()}${a.completed_at?' → '+new Date(a.completed_at).toLocaleTimeString():''}</small>${a.error?`<div class="event-error">${esc(a.error)}</div>`:''}${a.response_body?`<pre>${esc(a.response_body)}</pre>`:''}</div></div>`).join('')||'<div class="empty">No network attempt was made because the event was unrouted.</div>';
+    const subscribedWabas=new Set((state.subscriptions||[]).map(x=>x.waba_id));
+    const unroutedHint = w.status==='unrouted' && waba!=='—' && !subscribedWabas.has(waba)
+      ? `No callback is subscribed for <b>${esc(waba)}</b>, so this event was stored but never sent. Subscriptions are per WhatsApp Business Account: a callback registered for another WABA does not receive these.`
+      : 'No network attempt was made because the event was unrouted.';
+    const attempts=(w.attempts||[]).map(a=>`<div class="attempt-row"><span class="badge ${a.error?'red':''}">#${a.attempt_number}</span><div><b>${a.status_code??'Network error'}</b><small>${new Date(a.requested_at).toLocaleString()}${a.completed_at?' → '+new Date(a.completed_at).toLocaleTimeString():''}</small>${a.error?`<div class="event-error">${esc(a.error)}</div>`:''}${a.response_body?`<pre>${esc(a.response_body)}</pre>`:''}</div></div>`).join('')||`<div class="empty">${unroutedHint}</div>`;
     return `<div class="item"><div class="item-head">
       <div class="avatar"><svg class="ico" style="color:var(--fb-blue)"><use href="#i-webhook"/></svg></div>
-      <div class="grow"><b>${esc(content)} <span class="badge ${badge}">${esc(w.status.toUpperCase())}</span></b><small>${new Date(w.created_at).toLocaleString()} · ${esc(w.id)}</small></div>
+      <div class="grow"><b>${esc(subject)} <span class="badge ${badge}" title="Delivery of this event to your endpoint">${esc(w.status.toUpperCase())}</span></b><small>${new Date(w.created_at).toLocaleString()} · ${esc(w.id)}</small></div>
       <button class="btn secondary small" onclick="copyWebhook('${esc(w.id)}')">Copy JSON</button>${w.destination_url?`<button class="btn secondary small" onclick="replay('${esc(w.id)}')">Replay</button>`:''}</div>
+      ${w.status==='unrouted' && waba!=='—' && !subscribedWabas.has(waba) ? `<div class="unrouted-note">Not delivered: <b>${esc(waba)}</b> has no subscribed callback. <button class="btn secondary small" onclick="openModal('webhook-modal')">Subscribe a URL</button></div>` : ''}
       <div class="event-meta"><div><small>WABA</small><b>${esc(waba)}</b></div><div><small>Phone-number ID</small><b>${esc(phone)}</b></div><div><small>Attempts / HTTP</small><b>${w.attempt_count} / ${esc(w.last_status_code??'—')}</b></div><div><small>Destination</small><b title="${esc(w.destination_url||'Unrouted')}">${esc(w.destination_url||'Unrouted')}</b></div></div>
       <details><summary style="cursor:pointer;color:var(--fb-blue);font-weight:600">View formatted request JSON, signature and response</summary>
         <div class="field-label">Request body</div><div class="json-view">${jsonHtml(payload)}</div>
@@ -201,7 +354,9 @@ function renderWebhookHistory(){
         <div class="field-label">Delivery attempt history</div><div class="attempt-list">${attempts}</div>
         ${w.last_error?`<div class="event-error">${esc(w.last_error)}</div>`:''}${w.last_response_body?`<div class="event-response json-view">${esc(w.last_response_body)}</div>`:''}
       </details></div>`;
-  }).join('')||'<div class="empty">No webhook history matches this filter.</div>';
+  }).join('')|| (state.webhooks.length
+    ? '<div class="empty">No webhook history matches these filters.</div>'
+    : '<div class="empty">No webhook events yet. Send or receive a message to generate one.</div>');
 }
 function copyWebhook(id){const item=state.webhooks.find(w=>w.id===id);if(item)copyText(JSON.stringify(item.request_body,null,2));}
 

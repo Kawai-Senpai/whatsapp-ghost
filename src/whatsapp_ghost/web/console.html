@@ -20,7 +20,7 @@
     <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></symbol>
     <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h8"/></symbol>
     <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
-    <symbol id="i-edit" viewBox="0 0 24 24"><path d="M4 20h4l10-10-4-4L4 16v4z"/><path d="M13.5 6.5l4 4"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v6M14 11v6"/></symbol><symbol id="i-edit" viewBox="0 0 24 24"><path d="M4 20h4l10-10-4-4L4 16v4z"/><path d="M13.5 6.5l4 4"/></symbol>
     <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 0 0-14-4L4 9M4 13a8 8 0 0 0 14 4l2-2"/><path d="M4 5v4h4M20 19v-4h-4"/></symbol>
     <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
     <symbol id="i-open" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9"/><path d="M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4"/></symbol>
@@ -213,14 +213,37 @@
           <div><small>Subscriptions</small><b id="wh-subscriptions">0</b></div>
           <div><small>Total events</small><b id="wh-total">0</b></div>
           <div><small>Delivered</small><b id="wh-delivered">0</b></div>
-          <div><small>Failed / unrouted</small><b id="wh-failed">0</b></div>
+          <div><small>Failed</small><b id="wh-failed">0</b></div>
+          <div><small>Unrouted</small><b id="wh-unrouted">0</b></div>
         </div>
         <div class="card subscriptions-card"><h2>Configured endpoints</h2><div id="subscription-list"></div></div>
+        <div class="notice-warn" id="hook-unsubscribed" hidden></div>
         <div class="hook-toolbar">
-          <select class="field" id="hook-filter" onchange="renderWebhookHistory()"><option value="all">All statuses</option><option value="delivered">Delivered</option><option value="failed">Failed</option><option value="unrouted">Unrouted</option><option value="pending">Pending</option></select>
-          <input class="field" id="hook-search" oninput="renderWebhookHistory()" placeholder="Search event, ID, WABA, or destination">
+          <select class="field" id="hook-filter" onchange="renderWebhookHistory(1)"><option value="all">All statuses</option><option value="delivered">Delivered</option><option value="failed">Failed</option><option value="unrouted">Unrouted</option><option value="pending">Pending</option></select>
+          <select class="field" id="hook-waba" onchange="renderWebhookHistory(1)"><option value="all">All accounts</option></select>
+          <select class="field" id="hook-phone" onchange="renderWebhookHistory(1)"><option value="all">All numbers</option></select>
+          <select class="field" id="hook-event" onchange="renderWebhookHistory(1)"><option value="all">All events</option><option value="inbound">Inbound messages</option><option value="status">Status updates</option></select>
+          <input class="field" id="hook-search" oninput="renderWebhookHistory(1)" placeholder="Search event, ID, WABA, or destination">
         </div>
-        <div class="list" id="webhook-list"></div>
+        <div class="hook-resultbar">
+          <span id="hook-count" class="count-pill">0</span>
+          <button class="btn secondary small" id="hook-clear" onclick="clearWebhookFilters()" hidden>Clear filters</button>
+          <span class="grow"></span>
+          <label class="inline-label" for="hook-sort">Sort</label>
+          <select class="field" id="hook-sort" onchange="renderWebhookHistory(1)">
+            <option value="newest">Newest first</option>
+            <option value="oldest">Oldest first</option>
+            <option value="status">Status</option>
+            <option value="attempts">Most attempts</option>
+          </select>
+          <label class="inline-label" for="hook-size">Per page</label>
+          <select class="field" id="hook-size" onchange="renderWebhookHistory(1)">
+            <option value="10">10</option><option value="25" selected>25</option>
+            <option value="50">50</option><option value="100">100</option>
+          </select>
+        </div>
+        <div class="list list-scroll hook-list" id="webhook-list"></div>
+        <div class="pager" id="hook-pager"></div>
       </section>
 
       <!-- INTEGRATION GUIDE -->
@@ -269,8 +292,15 @@
         <div class="grid">
           <div class="card span6">
             <h2>Test customers</h2>
-            <p class="card-sub">Each customer is a simulated phone that can chat with your business numbers.</p>
-            <div class="list" id="user-list"></div>
+            <p class="card-sub">Each customer is a simulated phone that can chat with your business numbers. Messaging any number creates one automatically.</p>
+            <div class="list-toolbar">
+              <span class="count-pill" id="user-count">0</span>
+              <div class="grow" id="user-filter-wrap" hidden>
+                <input class="field" id="user-filter" type="search" placeholder="Filter by name or number"
+                       aria-label="Filter test customers" oninput="setUserFilter(this.value)">
+              </div>
+            </div>
+            <div class="list list-scroll" id="user-list"></div>
             <div class="actions" style="margin-top:14px">
               <button class="btn wa" onclick="openModal('phone-modal')"><svg><use href="#i-plus"/></svg>Add customer</button>
               <button class="btn secondary" onclick="advanceClock()"><svg><use href="#i-clock"/></svg>Advance 25h</button>

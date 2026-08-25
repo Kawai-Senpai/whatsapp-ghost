@@ -20,6 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from .clock import parse_datetime, parse_duration
 from .config import Settings
 from .db import Store
+from .identity import generated_color, generated_name
 from .engine import Engine, normalize_phone
 from .errors import graph_error
 from .template_validation import validate_template
@@ -244,7 +245,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         wa_id = normalize_phone(str(body.get("wa_id", "")))
         if not wa_id:
             return JSONResponse({"error": "wa_id is required"}, status_code=400)
-        store.execute("INSERT OR REPLACE INTO simulated_users VALUES(?,?,?,?,?)", (wa_id, body.get("display_name", wa_id), int(body.get("online", True)), int(body.get("blocked", False)), store.now().isoformat()))
+        store.execute(
+            "INSERT OR REPLACE INTO simulated_users(wa_id,display_name,online,blocked,created_at,color,auto_created)"
+            " VALUES(?,?,?,?,?,?,?)",
+            (
+                wa_id,
+                body.get("display_name") or generated_name(wa_id),
+                int(body.get("online", True)),
+                int(body.get("blocked", False)),
+                store.now().isoformat(),
+                body.get("color") or generated_color(wa_id),
+                0,
+            ),
+        )
         return dict(engine.user(wa_id))
 
     @app.delete("/_sandbox/phones/{wa_id}")
@@ -265,7 +278,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         current = engine.user(wa_id)
         if not current:
             return JSONResponse({"error": "phone not found"}, status_code=404)
-        store.execute("UPDATE simulated_users SET display_name=?,online=?,blocked=? WHERE wa_id=?", (body.get("display_name", current["display_name"]), int(body.get("online", bool(current["online"]))), int(body.get("blocked", bool(current["blocked"]))), normalize_phone(wa_id)))
+        store.execute(
+            "UPDATE simulated_users SET display_name=?,online=?,blocked=?,color=? WHERE wa_id=?",
+            (
+                body.get("display_name") or current["display_name"],
+                int(body.get("online", bool(current["online"]))),
+                int(body.get("blocked", bool(current["blocked"]))),
+                body.get("color") or current["color"] or generated_color(normalize_phone(wa_id)),
+                normalize_phone(wa_id),
+            ),
+        )
         return dict(engine.user(wa_id))
 
     @app.post("/_sandbox/phones/{wa_id}/messages", status_code=201)
@@ -304,6 +326,35 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         for message in unread:
             await engine.set_status(message["id"], "read")
         return {"success": True, "read": len(unread)}
+
+    @app.get("/_sandbox/phones/{wa_id}/pins")
+    def sandbox_pins(wa_id: str):
+        """Pinned business chats for one simulated customer."""
+        pins = store.all(
+            "SELECT phone_number_id,pinned_at FROM conversations "
+            "WHERE user_wa_id=? AND pinned=1 ORDER BY pinned_at DESC",
+            (normalize_phone(wa_id),),
+        )
+        return {"data": [row["phone_number_id"] for row in pins]}
+
+    @app.post("/_sandbox/phones/{wa_id}/pins")
+    def sandbox_pin_set(wa_id: str, body: dict[str, Any] = Body(...)):
+        phone_number_id = body.get("phone_number_id")
+        if not phone_number_id:
+            return JSONResponse({"error": "phone_number_id is required"}, status_code=400)
+        if not store.one("SELECT id FROM phone_numbers WHERE id=?", (phone_number_id,)):
+            return JSONResponse({"error": "phone number not found"}, status_code=404)
+        normalized = normalize_phone(wa_id)
+        if not engine.user(normalized):
+            return JSONResponse({"error": "phone not found"}, status_code=404)
+        pinned = bool(body.get("pinned", True))
+        # The chat may have no conversation row yet, so create it before pinning.
+        engine.conversation(phone_number_id, normalized)
+        store.execute(
+            "UPDATE conversations SET pinned=?,pinned_at=? WHERE phone_number_id=? AND user_wa_id=?",
+            (int(pinned), store.now().isoformat() if pinned else None, phone_number_id, normalized),
+        )
+        return {"success": True, "phone_number_id": phone_number_id, "pinned": pinned}
 
     @app.get("/_sandbox/messages")
     def sandbox_messages(

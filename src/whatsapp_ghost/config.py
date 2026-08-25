@@ -17,6 +17,7 @@ class Settings:
     mode: str
     status_delay_seconds: float
     notify: str
+    auto_create_recipients: bool
 
     @property
     def database_path(self) -> Path:
@@ -41,4 +42,6 @@ class Settings:
             mode=mode,
             status_delay_seconds=float(os.getenv("WABA_STATUS_DELAY", "0.05")),
             notify=os.getenv("WABA_NOTIFY", "bell"),
+            auto_create_recipients=os.getenv("WABA_AUTO_CREATE_RECIPIENTS", "true").lower()
+            not in {"0", "false", "no"},
         )

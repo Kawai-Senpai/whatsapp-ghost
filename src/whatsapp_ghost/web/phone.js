@@ -5,7 +5,7 @@ const state = {
   wa: params.get('phone') || '',      // the simulated customer (us)
   activePhone: params.get('business') || '',  // business phone_number_id we're chatting with
   socket:null, reconnect:null, reading:false, messages:new Map(), replying:null, loadSequence:0,
-  pinned:new Set(JSON.parse(localStorage.getItem('ghost-pinned-chats') || '[]')),
+  pinned:new Set(),  // server-backed; loaded per customer from /_sandbox/phones/{wa}/pins
 };
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -148,6 +148,7 @@ async function boot(){
     $('#me-avatar').textContent = initials(me?.display_name || state.wa || 'Y');
     document.title = 'WhatsApp' + (me? ' · '+me.display_name : '');
 
+    await loadPins();
     renderChatList();
     // auto-open the requested / first business
     const flat = businessPhones();
@@ -177,10 +178,28 @@ function renderChatList(){
     </div>`).join('') || '<div style="padding:24px;color:var(--muted);text-align:center">No business numbers yet.<br>Add one in the console.</div>';
 }
 
-function togglePin(phoneId){
-  if(state.pinned.has(phoneId)) state.pinned.delete(phoneId); else state.pinned.add(phoneId);
-  localStorage.setItem('ghost-pinned-chats',JSON.stringify([...state.pinned]));
-  if(phoneId===state.activePhone) $('#menu-pin-chat').textContent=state.pinned.has(phoneId)?'Unpin chat':'Pin chat';
+async function loadPins(){
+  if(!state.wa){ state.pinned=new Set(); return; }
+  try{
+    const d = await req('/_sandbox/phones/'+encodeURIComponent(state.wa)+'/pins');
+    state.pinned = new Set(d.data||[]);
+  }catch{ state.pinned = new Set(); }
+}
+
+async function togglePin(phoneId){
+  const next = !state.pinned.has(phoneId);
+  if(next) state.pinned.add(phoneId); else state.pinned.delete(phoneId);
+  if(phoneId===state.activePhone) $('#menu-pin-chat').textContent=next?'Unpin chat':'Pin chat';
+  try{
+    await req('/_sandbox/phones/'+encodeURIComponent(state.wa)+'/pins',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({phone_number_id:phoneId,pinned:next})
+    });
+  }catch(e){
+    // Roll back so the sidebar never disagrees with what was stored.
+    if(next) state.pinned.delete(phoneId); else state.pinned.add(phoneId);
+    if(phoneId===state.activePhone) $('#menu-pin-chat').textContent=state.pinned.has(phoneId)?'Unpin chat':'Pin chat';
+  }
   renderChatList();
 }
 
@@ -346,7 +365,7 @@ $('#convo-search-btn').addEventListener('click',()=>{$('#convo-search').classLis
 $('#close-convo-search').addEventListener('click',()=>{$('#convo-search-input').value='';$('#convo-search').classList.add('hidden');loadMessages();});
 $('#convo-search-input').addEventListener('input',loadMessages);
 $('#convo-menu-btn').addEventListener('click',event=>{event.stopPropagation();$('#convo-menu').classList.toggle('hidden');});
-$('#menu-pin-chat').addEventListener('click',()=>{togglePin(state.activePhone);$('#convo-menu').classList.add('hidden');});
+$('#menu-pin-chat').addEventListener('click',async ()=>{$('#convo-menu').classList.add('hidden');await togglePin(state.activePhone);renderChatList();});
 $('#menu-contact-info').addEventListener('click',()=>{const phone=businessPhones().find(item=>item.id===state.activePhone);alert(phone?`${phone.verified_name}\n+${phone.display_phone_number}\n${phone.business_name}`:'Contact unavailable');});
 document.addEventListener('click',event=>{if(!event.target.closest('#convo-menu')&&!event.target.closest('#convo-menu-btn'))$('#convo-menu').classList.add('hidden');});
 document.addEventListener('click',event=>{if(!event.target.closest('.msg-action-menu')&&!event.target.closest('.msg-action-toggle'))document.querySelectorAll('.msg.actions-open').forEach(item=>item.classList.remove('actions-open'));});

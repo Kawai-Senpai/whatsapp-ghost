@@ -118,11 +118,52 @@ def test_message_validation_error_codes(client: TestClient, headers: dict[str, s
     assert response.json()["error"]["code"] == code
 
 
-def test_unknown_sender_and_unknown_strict_recipient(client: TestClient, headers: dict[str, str]) -> None:
+def test_unknown_sender_and_unknown_strict_recipient(
+    client: TestClient, no_autocreate_client: TestClient, headers: dict[str, str]
+) -> None:
     unknown_sender = client.post("/v25.0/UNKNOWN/messages", headers=headers, json=text_message())
     assert unknown_sender.json()["error"]["code"] == 100
-    unknown_recipient = client.post("/v25.0/PHONE_LOCAL/messages", headers=headers, json=text_message(to="15551112222"))
+    # With autocreate disabled the recipient must still pre-exist.
+    unknown_recipient = no_autocreate_client.post(
+        "/v25.0/PHONE_LOCAL/messages", headers=headers, json=text_message(to="15551112222")
+    )
     assert unknown_recipient.json()["error"]["code"] == 131026
+
+
+def template_message(to: str) -> dict:
+    return {
+        "messaging_product": "whatsapp",
+        "to": to,
+        "type": "template",
+        "template": {"name": "hello_world", "language": {"code": "en_US"},
+                     "components": [{"type": "body", "parameters": [{"type": "text", "text": "Sam"}]}]},
+    }
+
+
+def test_autocreate_lets_templates_reach_any_number(client: TestClient, headers: dict[str, str]) -> None:
+    """Production accepts a template to any valid number; strict mode must too."""
+    assert client.post("/v25.0/PHONE_LOCAL/messages", headers=headers,
+                       json=template_message("15551112222")).status_code == 200
+    user = next(u for u in client.get("/_sandbox/phones").json()["data"] if u["wa_id"] == "15551112222")
+    assert user["auto_created"] == 1
+    assert user["display_name"] and user["display_name"] != "15551112222"
+    assert user["color"].startswith("#")
+
+
+def test_autocreate_leaves_service_window_closed(client: TestClient, headers: dict[str, str]) -> None:
+    """The prod-parity guarantee: a cold free-form send still fails with 131047."""
+    response = client.post("/v25.0/PHONE_LOCAL/messages", headers=headers, json=text_message(to="15553334444"))
+    assert response.json()["error"]["code"] == 131047
+    assert client.get("/_sandbox/phones").json()["data"]
+
+
+def test_autocreate_preserves_user_renames(client: TestClient, headers: dict[str, str]) -> None:
+    client.post("/v25.0/PHONE_LOCAL/messages", headers=headers, json=template_message("15556667777"))
+    client.patch("/_sandbox/phones/15556667777", json={"display_name": "VIP Client", "color": "#123456"})
+    client.post("/v25.0/PHONE_LOCAL/messages", headers=headers, json=template_message("15556667777"))
+    user = next(u for u in client.get("/_sandbox/phones").json()["data"] if u["wa_id"] == "15556667777")
+    assert user["display_name"] == "VIP Client"
+    assert user["color"] == "#123456"
 
 
 def test_offline_and_blocked_customers_fail_delivery(settings: Settings, headers: dict[str, str]) -> None:
@@ -258,3 +299,20 @@ def test_resubscribing_the_same_callback_does_not_duplicate_deliveries(
 
     active = client.get("/v25.0/WABA_LOCAL/subscribed_apps", headers=headers).json()["data"]
     assert len([s for s in active if s["callback_url"] == payload["callback_url"]]) == 1
+
+
+def test_pins_persist_in_database_and_are_per_customer(client: TestClient) -> None:
+    """Pins used to live in localStorage, so they vanished between browsers."""
+    assert client.get("/_sandbox/phones/15550002001/pins").json()["data"] == []
+    client.post("/_sandbox/phones/15550002001/pins", json={"phone_number_id": "PHONE_LOCAL", "pinned": True})
+    assert client.get("/_sandbox/phones/15550002001/pins").json()["data"] == ["PHONE_LOCAL"]
+    # A different customer must not inherit that pin.
+    client.post("/_sandbox/phones", json={"wa_id": "15550002002", "display_name": "Second"})
+    assert client.get("/_sandbox/phones/15550002002/pins").json()["data"] == []
+    client.post("/_sandbox/phones/15550002001/pins", json={"phone_number_id": "PHONE_LOCAL", "pinned": False})
+    assert client.get("/_sandbox/phones/15550002001/pins").json()["data"] == []
+
+
+def test_pin_rejects_unknown_phone_number(client: TestClient) -> None:
+    response = client.post("/_sandbox/phones/15550002001/pins", json={"phone_number_id": "NOPE", "pinned": True})
+    assert response.status_code == 404

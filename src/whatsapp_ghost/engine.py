@@ -13,6 +13,8 @@ from typing import Any
 
 import httpx
 
+from .identity import generated_color, generated_name
+
 from .config import Settings
 from .db import Store
 
@@ -39,6 +41,24 @@ class Engine:
     def user(self, wa_id: str):
         return self.store.one("SELECT * FROM simulated_users WHERE wa_id=?", (normalize_phone(wa_id),))
 
+    def ensure_user(self, wa_id: str):
+        """Create a simulated customer on first contact, mirroring production.
+
+        Returns the existing row untouched when the number is already known, so
+        a user-chosen name or color is never overwritten by a later send.
+        """
+        normalized = normalize_phone(wa_id)
+        existing = self.user(normalized)
+        if existing:
+            return existing
+        self.store.execute(
+            "INSERT OR IGNORE INTO simulated_users(wa_id,display_name,online,blocked,created_at,color,auto_created)"
+            " VALUES(?,?,?,?,?,?,?)",
+            (normalized, generated_name(normalized), 1, 0, self.store.now().isoformat(),
+             generated_color(normalized), 1),
+        )
+        return self.user(normalized)
+
     def conversation(self, phone_id: str, wa_id: str) -> str:
         wa_id = normalize_phone(wa_id)
         row = self.store.one("SELECT id FROM conversations WHERE phone_number_id=? AND user_wa_id=?", (phone_id, wa_id))
@@ -57,8 +77,14 @@ class Engine:
         to = normalize_phone(str(body.get("to", "")))
         if not to:
             return 131008, "Parameter to is required."
-        if self.settings.mode == "strict" and not self.user(to):
-            return 131026, "Recipient is not a registered simulated user. Create it under /_sandbox/phones."
+        if not self.user(to):
+            if self.settings.mode == "strict" and not self.settings.auto_create_recipients:
+                return 131026, "Recipient is not a registered simulated user. Create it under /_sandbox/phones."
+            # Production accepts any valid number, so mirror that by materialising
+            # the recipient on first contact. The 24-hour service window is left
+            # closed: a cold free-form send must still fail with 131047 the way
+            # it does against Meta.
+            self.ensure_user(to)
         message_type = body.get("type")
         if not message_type and self.settings.mode == "loose":
             matches = [item for item in SUPPORTED_MESSAGE_TYPES if item in body]
