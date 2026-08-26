@@ -129,6 +129,23 @@ class Engine:
             actual = len(sent_body.get("parameters", []))
             if expected != actual:
                 return 132000, f"Template body expects {expected} parameter(s), but {actual} were supplied."
+            # Cloud API rejects a parameter value containing a newline, a tab, or
+            # four or more consecutive spaces. Accepting them locally is worse
+            # than useless: a multi-line value renders fine in the sandbox and
+            # then fails in production, which is exactly the class of bug this
+            # tool exists to catch. Newlines in the template BODY are legal and
+            # unaffected; this is only about the substituted values.
+            for component in template.get("components", []):
+                for parameter in component.get("parameters", []) or []:
+                    value = parameter.get("text")
+                    if not isinstance(value, str):
+                        continue
+                    if any(bad in value for bad in ("\n", "\r", "\t", "    ")):
+                        return (
+                            132000,
+                            "Parameter values cannot contain new-line characters, tabs, "
+                            "or more than four consecutive spaces.",
+                        )
         return None, None
 
     async def send_outbound(self, version: str, phone_id: str, body: dict[str, Any]) -> dict[str, Any]:
