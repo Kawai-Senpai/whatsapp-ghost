@@ -630,3 +630,125 @@ def test_live_feeds_show_both_directions(page: Page, live_server: tuple[str, Pat
     # business it reached - the Meta inbound payload carries no recipient.
     expect(feed.locator(".feed-item.is-in")).not_to_have_count(0)
     expect(feed.locator(".feed-item.is-out").first).to_contain_text("Ghost Demo")
+
+
+def test_long_conversation_renders_one_page_not_everything(
+    page: Page, live_server: tuple[str, Path]
+) -> None:
+    """A long chat must not render every message on open.
+
+    Rendering all of them is what made a busy conversation slow: the transcript
+    was rebuilt from scratch, JSON payload dump included, on every single event.
+    """
+    base_url, _ = live_server
+    wa = "15550008400"
+    _seed_conversation(base_url, wa, "Long Chat", "seed")
+    for index in range(60):
+        httpx.post(
+            f"{base_url}/_sandbox/phones/{wa}/messages",
+            json={"phone_number_id": "PHONE_LOCAL", "type": "text", "text": f"bulk {index}"},
+            timeout=5,
+        )
+
+    page.goto(f"{base_url}/phone?phone={wa}&business=PHONE_LOCAL")
+    expect(page.locator("#load-earlier")).to_be_visible()
+    rendered = page.locator(".msg").count()
+    assert rendered <= 40, f"rendered {rendered} messages on open"
+
+    # Older messages arrive on demand and add to what is already there. The
+    # chat holds 61, so the second page is partial and the control retires.
+    page.locator("#load-earlier").click()
+    expect(page.locator("#load-earlier")).to_have_count(0)
+    grown = page.locator(".msg").count()
+    assert grown > rendered, f"load earlier added nothing ({rendered} -> {grown})"
+
+
+def test_short_conversation_offers_no_load_earlier_control(
+    page: Page, live_server: tuple[str, Path]
+) -> None:
+    """A dead button on a two-message chat is worse than no button."""
+    base_url, _ = live_server
+    wa = "15550008500"
+    _seed_conversation(base_url, wa, "Short Chat", "just the one")
+    page.goto(f"{base_url}/phone?phone={wa}&business=PHONE_LOCAL")
+    expect(page.locator(".msg").first).to_be_visible()
+    expect(page.locator("#load-earlier")).to_have_count(0)
+
+
+def test_a_live_message_appends_without_reloading_the_transcript(
+    page: Page, live_server: tuple[str, Path]
+) -> None:
+    """The event path must not refetch the conversation.
+
+    It used to call loadMessages() per event, which threw away any earlier
+    pages the reader had loaded and re-rendered everything.
+    """
+    base_url, _ = live_server
+    wa = "15550008600"
+    _seed_conversation(base_url, wa, "Append Chat", "seed")
+    for index in range(60):
+        httpx.post(
+            f"{base_url}/_sandbox/phones/{wa}/messages",
+            json={"phone_number_id": "PHONE_LOCAL", "type": "text", "text": f"bulk {index}"},
+            timeout=5,
+        )
+
+    page.goto(f"{base_url}/phone?phone={wa}&business=PHONE_LOCAL")
+    expect(page.locator("#load-earlier")).to_be_visible()
+    first_page = page.locator(".msg").count()
+    page.locator("#load-earlier").click()
+    # Wait for the page to actually land before counting.
+    expect(page.locator(".msg")).not_to_have_count(first_page)
+    expanded = page.locator(".msg").count()
+
+    httpx.post(
+        f"{base_url}/v25.0/PHONE_LOCAL/messages",
+        headers={"Authorization": "Bearer browser-token"},
+        json={"messaging_product": "whatsapp", "to": wa, "type": "text",
+              "text": {"body": "appended live"}},
+        timeout=5,
+    )
+    # One more message, and the loaded history is kept rather than reset.
+    expect(page.locator(".msg")).to_have_count(expanded + 1)
+    expect(page.locator("#messages")).to_contain_text("appended live")
+
+
+def test_console_recent_messages_paginate_and_survive_a_live_arrival(
+    page: Page, live_server: tuple[str, Path]
+) -> None:
+    """Loading older rows must not be undone by the next live message.
+
+    The live path trims the list to a cap; trimming back to a fixed 40 would
+    throw away every page the reader had just asked for.
+    """
+    base_url, _ = live_server
+    wa = "15550008700"
+    _seed_conversation(base_url, wa, "Feed Pager", "seed")
+    for index in range(70):
+        httpx.post(
+            f"{base_url}/_sandbox/phones/{wa}/messages",
+            json={"phone_number_id": "PHONE_LOCAL", "type": "text", "text": f"feed {index}"},
+            timeout=5,
+        )
+
+    page.goto(base_url + "/console")
+    page.locator('.side-link[data-page="simulator"]').click()
+    expect(page.locator("#sim-live")).to_have_class(re.compile(r"on"))
+    expect(page.locator("#sim-more")).to_be_visible()
+
+    first = page.locator(".sim-act").count()
+    page.locator("#sim-more").click()
+    expect(page.locator(".sim-act")).not_to_have_count(first)
+    grown = page.locator(".sim-act").count()
+    assert grown > first, f"load older added nothing ({first} -> {grown})"
+
+    httpx.post(
+        f"{base_url}/v25.0/PHONE_LOCAL/messages",
+        headers={"Authorization": "Bearer browser-token"},
+        json={"messaging_product": "whatsapp", "to": wa, "type": "text",
+              "text": {"body": "arrived after paging"}},
+        timeout=5,
+    )
+    expect(page.locator("#sim-activity")).to_contain_text("arrived after paging")
+    # The loaded pages survive: the list grows by one rather than snapping back.
+    expect(page.locator(".sim-act")).to_have_count(grown + 1)

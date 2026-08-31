@@ -392,3 +392,28 @@ textarea.field{min-height:88px;resize:vertical}
   font-variant-numeric:tabular-nums}
 .sim-act-body{margin-top:3px;color:var(--ink,#1c1e21);overflow:hidden;
   text-overflow:ellipsis;white-space:nowrap}
+
+/* ===== loading affordances =====
+   Every list started empty and stayed empty until its fetch resolved, which
+   is indistinguishable from a broken page. */
+.skeleton{position:relative;overflow:hidden;background:#e9edf1;border-radius:6px}
+.skeleton::after{content:"";position:absolute;inset:0;transform:translateX(-100%);
+  background:linear-gradient(90deg,transparent,rgba(255,255,255,.7),transparent);
+  animation:sk-shimmer 1.25s infinite}
+@keyframes sk-shimmer{100%{transform:translateX(100%)}}
+.sk-rows{display:flex;flex-direction:column;gap:10px;padding:12px 4px}
+.sk-row{display:flex;align-items:center;gap:12px}
+.sk-avatar{width:36px;height:36px;border-radius:50%;flex:0 0 auto}
+.sk-lines{flex:1;display:flex;flex-direction:column;gap:6px}
+.sk-line{height:10px}
+.sk-line.w40{width:40%}.sk-line.w70{width:70%}.sk-line.w25{width:25%}
+@media(prefers-reduced-motion:reduce){.skeleton::after{animation:none}}
+
+.busy{display:inline-flex;align-items:center;gap:7px;color:var(--muted);font-size:12px}
+.busy-dot{width:13px;height:13px;border-radius:50%;flex:0 0 auto;
+  border:2px solid #d3dae1;border-top-color:var(--fb-blue,#1877f2);
+  animation:busy-spin .7s linear infinite}
+@keyframes busy-spin{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){.busy-dot{animation-duration:2.4s}}
+.sim-more-wrap{display:flex;justify-content:center;padding:12px 0 4px}
+.sim-more-wrap .btn:disabled{cursor:wait;opacity:.75}

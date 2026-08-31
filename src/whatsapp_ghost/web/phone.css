@@ -199,3 +199,29 @@ button{cursor:pointer;font:inherit;color:inherit;border:0;background:none}
   padding:0 6px;display:grid;place-items:center;font-size:12px;font-weight:600;flex:0 0 auto}
 .chat-row.has-unread .c-name{font-weight:700}
 .chat-row.has-unread .c-time{color:var(--unread);font-weight:600}
+
+/* ===== loading affordances =====
+   A long conversation or a slow fetch used to leave the pane blank, which
+   reads as "stuck" rather than "working". */
+.earlier-wrap{display:flex;justify-content:center;padding:10px 0 14px}
+.earlier-btn{background:var(--panel);border:1px solid var(--line-2);border-radius:16px;
+  padding:6px 16px;font-size:13px;color:var(--wa-green-dark);font-weight:600;
+  box-shadow:0 1px 2px rgba(11,20,26,.12);transition:background .15s ease}
+.earlier-btn:hover:not(:disabled){background:var(--hover)}
+.earlier-btn:disabled{color:var(--muted);cursor:wait}
+
+.msg-loading{display:flex;flex-direction:column;gap:10px;padding:18px 6%}
+.skeleton{position:relative;overflow:hidden;background:rgba(11,20,26,.06);border-radius:8px}
+.skeleton::after{content:"";position:absolute;inset:0;transform:translateX(-100%);
+  background:linear-gradient(90deg,transparent,rgba(255,255,255,.55),transparent);
+  animation:shimmer 1.25s infinite}
+@keyframes shimmer{100%{transform:translateX(100%)}}
+.skeleton-msg{height:38px;width:52%;border-radius:8px}
+.skeleton-msg.alt{align-self:flex-end;width:44%;background:rgba(37,211,102,.12)}
+@media(prefers-reduced-motion:reduce){.skeleton::after{animation:none}}
+
+.spinner{width:15px;height:15px;border-radius:50%;display:inline-block;
+  border:2px solid rgba(11,20,26,.15);border-top-color:var(--wa-green-dark);
+  animation:spin .7s linear infinite;vertical-align:-3px}
+@keyframes spin{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){.spinner{animation-duration:2.4s}}

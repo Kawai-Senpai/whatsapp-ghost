@@ -1,7 +1,9 @@
 /* ===== WhatsApp Ghost developer console ===== */
-const state = { config:{}, apps:[], businesses:[], users:[], messages:[], webhooks:[], subscriptions:[], templates:[], hookPage:1,
-  unread:new Map(), lastSeen:new Map(), activity:[], observer:null, observerRetry:null };
+// Declared before state, which reads it for the initial pagination cap.
 const SIM_FEED_LIMIT = 40;
+const state = { config:{}, apps:[], businesses:[], users:[], messages:[], webhooks:[], subscriptions:[], templates:[], hookPage:1,
+  unread:new Map(), lastSeen:new Map(), activity:[], observer:null, observerRetry:null,
+  actMore:false, actBefore:null, actLoading:false, loadedCap:SIM_FEED_LIMIT };  // recent-messages pagination
 let guideLanguage = 'curl';
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -48,15 +50,34 @@ function goto(page){
   document.querySelectorAll('.page').forEach(p=>p.classList.toggle('active', p.id===page));
   window.scrollTo(0,0);
   if(page==='credentials') renderCredentials();
-  if(page==='webhooks') loadWebhooks();
-  if(page==='templates') loadTemplates();
+  if(page==='webhooks'){ showSkeleton('#webhook-list', 4); loadWebhooks(); }
+  if(page==='templates'){ showSkeleton('#template-list', 3); loadTemplates(); }
   if(page==='guide') renderGuide();
-  if(page==='simulator') loadSimActivity();
+  if(page==='simulator'){ showSkeleton('#sim-activity', 4); loadSimActivity(); }
 }
 document.querySelectorAll('[data-page]').forEach(b=>b.addEventListener('click',e=>{ e.preventDefault(); goto(b.dataset.page); }));
 
+/* Placeholder rows for a list whose fetch is still in flight. An empty
+   container is indistinguishable from a broken page, which is what made the
+   console feel stuck on every navigation. */
+function skeletonRows(count){
+  return '<div class="sk-rows">' + Array.from({length:count}, ()=>
+    '<div class="sk-row"><div class="skeleton sk-avatar"></div>'
+    + '<div class="sk-lines"><div class="skeleton sk-line w40"></div>'
+    + '<div class="skeleton sk-line w70"></div></div></div>').join('') + '</div>';
+}
+
+function showSkeleton(selector, count){
+  const box = document.querySelector(selector);
+  // Only ever replace an empty container: a reload of an already-populated
+  // list should not blink its contents away.
+  if(box && !box.children.length) box.innerHTML = skeletonRows(count||3);
+}
+
 /* ---- load everything ---- */
 async function loadAll(){
+  ['#business-list','#app-list','#template-list','#user-list','#webhook-list','#sim-activity']
+    .forEach(selector=>showSkeleton(selector, 3));
   try{
     state.config = await req('/_sandbox/config');
     const [apps,biz,users,msgs] = await Promise.all([
@@ -946,7 +967,11 @@ function simSummary(message){
 
 function pushSimActivity(entry){
   state.activity.unshift(entry);
-  if(state.activity.length > SIM_FEED_LIMIT) state.activity.length = SIM_FEED_LIMIT;
+  // The cap has to rise with what has been paged in, or every arrival would
+  // trim off the oldest loaded row and the list could never actually grow.
+  // state.loadedCap tracks the high-water mark of deliberately loaded rows.
+  state.loadedCap = Math.max(state.loadedCap || SIM_FEED_LIMIT, state.activity.length);
+  if(state.activity.length > state.loadedCap) state.activity.length = state.loadedCap;
   renderSimActivity();
 }
 
@@ -973,29 +998,60 @@ function renderSimActivity(){
         </div>
         <div class="sim-act-body">${esc(item.text || '(no body)')}</div>
       </div>
-    </button>`).join('');
+    </button>`).join('')
+    + (state.actMore
+      ? `<div class="sim-more-wrap"><button type="button" class="btn secondary small" id="sim-more">Load older messages</button></div>`
+      : '');
 }
 
 /* Seed the list on first open so it is not empty before anything new arrives. */
+function activityEntry(m){
+  return {
+    id: m.id,
+    wa: m.direction === 'inbound' ? m.sender_id : m.recipient_id,
+    phoneId: m.direction === 'inbound' ? m.recipient_id : m.sender_id,
+    inbound: m.direction === 'inbound',
+    type: m.message_type,
+    text: simSummary(m),
+    at: m.created_at,
+  };
+}
+
 async function loadSimActivity(){
   try{
     const d = await req('/_sandbox/messages?limit=' + SIM_FEED_LIMIT);
-    state.activity = (d.data||[]).map(m=>({
-      wa: m.direction === 'inbound' ? m.sender_id : m.recipient_id,
-      phoneId: m.direction === 'inbound' ? m.recipient_id : m.sender_id,
-      inbound: m.direction === 'inbound',
-      type: m.message_type,
-      text: simSummary(m),
-      at: m.created_at,
-    }));
-  }catch{ state.activity = []; }
+    state.activity = (d.data||[]).map(activityEntry);
+    state.actMore = !!d.has_more;
+    state.actBefore = d.next_before || null;
+  }catch{ state.activity = []; state.actMore = false; state.actBefore = null; }
   renderSimActivity();
+}
+
+/* Older messages for the recent-messages list, on demand. Same keyset cursor
+   as the phone transcript, so a message arriving mid-scroll cannot shift the
+   page boundaries under the reader. */
+async function loadMoreSimActivity(){
+  if(!state.actMore || state.actLoading || !state.actBefore) return;
+  state.actLoading = true;
+  const button = $('#sim-more');
+  if(button){ button.disabled = true; button.innerHTML = '<span class="busy-dot"></span> Loading'; }
+  try{
+    const d = await req('/_sandbox/messages?limit=' + SIM_FEED_LIMIT
+      + '&before=' + encodeURIComponent(state.actBefore));
+    const seen = new Set(state.activity.map(item=>item.id));
+    for(const m of (d.data||[])) if(!seen.has(m.id)) state.activity.push(activityEntry(m));
+    state.actMore = !!d.has_more;
+    state.actBefore = d.next_before || null;
+    state.loadedCap = state.activity.length;
+  }catch(e){ toast(e.message, true); }
+  finally{ state.actLoading = false; renderSimActivity(); }
 }
 
 /* Delegated so the rows keep working across every live re-render. Opens the
    exact pair the row describes - that customer, that business - rather than
    the first business, which is what openPhoneTabFor falls back to. */
 document.addEventListener('click', event=>{
+  if(event.target.closest('#sim-more')){ loadMoreSimActivity(); return; }
   const row = event.target.closest('.sim-act[data-open-wa]');
   if(!row) return;
   const wa = row.dataset.openWa;

@@ -400,26 +400,60 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         wa_id: str | None = None,
         phone_number_id: str | None = None,
         limit: int = Query(100, ge=1, le=500),
+        before: str | None = Query(None, description="Message id to page backwards from."),
     ):
+        """Newest messages first, optionally paged backwards from ``before``.
+
+        Pagination is keyset, not OFFSET: the cursor is the (created_at, rowid)
+        of a message the caller already has. OFFSET would drift as new messages
+        arrive during a conversation, silently skipping or repeating rows, and
+        it makes the database walk the rows it is about to discard. The rowid
+        tiebreak matters because the sandbox can write several messages inside
+        the same clock tick, which a created_at-only cursor would either lose
+        or replay forever.
+        """
+        anchor: tuple[str, int] | None = None
+        if before:
+            row = store.one("SELECT created_at, rowid FROM messages WHERE id=?", (before,))
+            if not row:
+                return JSONResponse({"error": "before cursor is not a known message id"}, status_code=400)
+            anchor = (row["created_at"], row["rowid"])
+
+        # One extra row is fetched purely to answer "is there more?" without a
+        # second COUNT query; it is dropped before the response is built.
+        probe = limit + 1
+        keyset = "AND (m.created_at, m.rowid) < (?, ?) " if anchor else ""
         if wa_id and phone_number_id:
             result = store.all(
                 "SELECT m.* FROM messages m JOIN conversations c ON c.id=m.conversation_id "
-                "WHERE c.user_wa_id=? AND c.phone_number_id=? "
+                "WHERE c.user_wa_id=? AND c.phone_number_id=? " + keyset +
                 "ORDER BY m.created_at DESC, m.rowid DESC LIMIT ?",
-                (normalize_phone(wa_id), phone_number_id, limit),
+                (normalize_phone(wa_id), phone_number_id, *(anchor or ()), probe),
             )
         elif wa_id:
             result = store.all(
-                "SELECT * FROM messages WHERE sender_id=? OR recipient_id=? "
-                "ORDER BY created_at DESC, rowid DESC LIMIT ?",
-                (normalize_phone(wa_id), normalize_phone(wa_id), limit),
+                "SELECT m.* FROM messages m WHERE (m.sender_id=? OR m.recipient_id=?) " + keyset +
+                "ORDER BY m.created_at DESC, m.rowid DESC LIMIT ?",
+                (normalize_phone(wa_id), normalize_phone(wa_id), *(anchor or ()), probe),
             )
         else:
-            result = store.all("SELECT * FROM messages ORDER BY created_at DESC, rowid DESC LIMIT ?", (limit,))
+            result = store.all(
+                "SELECT m.* FROM messages m WHERE 1=1 " + keyset +
+                "ORDER BY m.created_at DESC, m.rowid DESC LIMIT ?",
+                (*(anchor or ()), probe),
+            )
         data = rows(result)
+        has_more = len(data) > limit
+        data = data[:limit]
         for item in data:
             item["payload"] = json.loads(item.pop("payload_json"))
-        return {"data": data}
+            item.pop("rowid", None)
+        # The cursor for the next page is the oldest id in this one.
+        return {
+            "data": data,
+            "has_more": has_more,
+            "next_before": data[-1]["id"] if data and has_more else None,
+        }
 
     @app.get("/_sandbox/conversations")
     def sandbox_conversations(wa_id: str | None = None, phone_number_id: str | None = None):

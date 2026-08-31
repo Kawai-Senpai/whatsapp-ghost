@@ -6,6 +6,7 @@ const state = {
   activePhone: params.get('business') || '',  // business phone_number_id we're chatting with
   socket:null, reconnect:null, reading:false, messages:new Map(), replying:null, loadSequence:0,
   pinned:new Set(),  // server-backed; loaded per customer from /_sandbox/phones/{wa}/pins
+  hasMore:false, nextBefore:null, loadingEarlier:false,  // message pagination cursor
   observer:null, observerRetry:null,   // firehose socket: every mobile, not just ours
   feed:[],                              // newest-first arrivals shown in the live inbox
   unread:new Map(),                     // wa_id -> unread count, derived from message status
@@ -258,26 +259,121 @@ async function openChat(phoneId){
 }
 function closeChat(){ $('#app').classList.remove('chat-open'); }
 
+/* How many messages the conversation opens with, and how many each "load
+   earlier" fetch adds. A long conversation used to render every message on
+   every event: 200 rows of innerHTML plus a JSON.stringify of each payload,
+   re-run from scratch each time a single message arrived. */
+const PAGE_SIZE = 40;
+
+function showMessageSkeleton(){
+  const box = $('#messages');
+  if(!box) return;
+  // Shown only for a cold load; an incremental update already has content on
+  // screen and replacing it with placeholders would flicker.
+  box.innerHTML = '<div class="msg-loading">' +
+    Array.from({length:6}, (_,i)=>`<div class="skeleton skeleton-msg${i%2?' alt':''}"></div>`).join('') +
+    '</div>';
+}
+
 async function loadMessages(){
   if(!state.wa){ return; }
   const sequence=++state.loadSequence;
-  const d = await req('/_sandbox/messages?wa_id='+encodeURIComponent(state.wa)+'&phone_number_id='+encodeURIComponent(state.activePhone)+'&limit=200');
+  showMessageSkeleton();
+  const d = await req('/_sandbox/messages?wa_id='+encodeURIComponent(state.wa)
+    +'&phone_number_id='+encodeURIComponent(state.activePhone)
+    +'&limit='+PAGE_SIZE);
   if(sequence!==state.loadSequence) return;
   const all = d.data.reverse();
   state.messages = new Map(all.map(message=>[message.id,message]));
-  const unread = all.filter(m=>m.direction==='outbound' && ['accepted','sent','delivered'].includes(m.status));
-  if(unread.length && !state.reading){
-    state.reading=true;
-    try{
-      await req(`/_sandbox/phones/${encodeURIComponent(state.wa)}/read`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone_number_id:state.activePhone})});
-      unread.forEach(m=>m.status='read');
-      // Reading is what clears the badge, so refresh it here rather than
-      // waiting for an observer event: the read POST does not broadcast to
-      // this page's own wa_id.
-      await loadUnread(); renderMobiles(); renderChatList();
-    }finally{ state.reading=false; }
+  state.hasMore = !!d.has_more;
+  state.nextBefore = d.next_before || null;
+  await markRead(all);
+  renderMessages({scroll:'bottom'});
+}
+
+/* Opening a chat is what marks its delivered messages read, so this stays tied
+   to a load rather than to rendering, which now happens far more often. */
+async function markRead(messages){
+  const unread = messages.filter(m=>m.direction==='outbound' && ['accepted','sent','delivered'].includes(m.status));
+  if(!unread.length || state.reading) return;
+  state.reading=true;
+  try{
+    await req(`/_sandbox/phones/${encodeURIComponent(state.wa)}/read`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone_number_id:state.activePhone})});
+    unread.forEach(m=>m.status='read');
+    // Reading is what clears the badge, so refresh it here rather than
+    // waiting for an observer event: the read POST does not broadcast to
+    // this page's own wa_id.
+    await loadUnread(); renderMobiles(); renderChatList();
+  }finally{ state.reading=false; }
+}
+
+/* Fetch the page of older messages before the ones already held, preserving
+   the reading position: prepending content would otherwise jump the viewport
+   by exactly the height of what was added. */
+async function loadEarlier(){
+  if(!state.hasMore || state.loadingEarlier || !state.nextBefore) return;
+  state.loadingEarlier = true;
+  const button = $('#load-earlier');
+  if(button){ button.disabled = true; button.textContent = 'Loading…'; }
+  const sequence = state.loadSequence;
+  try{
+    const d = await req('/_sandbox/messages?wa_id='+encodeURIComponent(state.wa)
+      +'&phone_number_id='+encodeURIComponent(state.activePhone)
+      +'&limit='+PAGE_SIZE+'&before='+encodeURIComponent(state.nextBefore));
+    // A chat switch during the fetch invalidates this page entirely.
+    if(sequence !== state.loadSequence) return;
+    const older = d.data.reverse();
+    const box = $('#messages');
+    const anchorHeight = box.scrollHeight, anchorTop = box.scrollTop;
+    const merged = new Map();
+    older.forEach(m=>merged.set(m.id,m));
+    state.messages.forEach((m,id)=>merged.set(id,m));
+    state.messages = merged;
+    state.hasMore = !!d.has_more;
+    state.nextBefore = d.next_before || null;
+    renderMessages({scroll:'none'});
+    box.scrollTop = anchorTop + (box.scrollHeight - anchorHeight);
+  }finally{
+    state.loadingEarlier = false;
+    const b = $('#load-earlier');
+    if(b){ b.disabled = false; b.textContent = 'Load earlier messages'; }
+  }
+}
+
+/* One message arrived. Merging it beats re-fetching the page: a live event
+   used to trigger a full reload of every message in the conversation. */
+function appendMessage(message){
+  if(!message || !message.id) return;
+  if(state.messages.has(message.id)){
+    state.messages.set(message.id, {...state.messages.get(message.id), ...message});
+  }else{
+    state.messages.set(message.id, message);
   }
   const box = $('#messages');
+  // Only chase the newest message if the reader is already at the bottom;
+  // yanking the viewport while they are reading history is worse than a
+  // missed scroll, and matches what a real client does.
+  const atBottom = !box || (box.scrollHeight - box.scrollTop - box.clientHeight) < 120;
+  renderMessages({scroll: atBottom ? 'bottom' : 'none'});
+}
+
+/* A status change (sent -> delivered -> read) only alters the ticks, so it
+   patches the one message rather than rebuilding the transcript. */
+function applyStatus(messageId, status){
+  const message = state.messages.get(messageId);
+  if(!message || message.status === status) return;
+  message.status = status;
+  const node = document.querySelector(`.msg[data-message-id="${CSS.escape(messageId)}"] .ticks`);
+  if(node) node.outerHTML = ticks(status);
+  else renderMessages({scroll:'none'});
+}
+
+function renderMessages(options){
+  const scroll = (options||{}).scroll || 'none';
+  const box = $('#messages');
+  if(!box) return;
+  const all = [...state.messages.values()]
+    .sort((a,b)=> new Date(a.created_at)-new Date(b.created_at) || String(a.id).localeCompare(String(b.id)));
   if(!all.length){
     box.innerHTML = '<div class="empty-msg">No messages yet.<br>Say hello to open the 24-hour service window.</div>';
     return;
@@ -299,8 +395,13 @@ async function loadMessages(){
     if(!reaction.message_id || !reaction.emoji) return;
     const values=reactions.get(reaction.message_id)||[]; values.push(reaction.emoji); reactions.set(reaction.message_id,values);
   });
+  // Older pages are fetched on demand, so the transcript starts with a control
+  // rather than silently pretending this is the whole conversation.
+  const earlier = state.hasMore
+    ? `<div class="earlier-wrap"><button type="button" id="load-earlier" class="earlier-btn">Load earlier messages</button></div>`
+    : '';
   let lastDay = '';
-  box.innerHTML = visible.map(m=>{
+  box.innerHTML = earlier + visible.map(m=>{
     // inbound = FROM customer (us) → show on right ("out"); outbound = from business → left ("in")
     const mine = m.direction === 'inbound';
     const val = messageText(m);
@@ -332,7 +433,7 @@ async function loadMessages(){
       <div class="raw json-view">${jsonHtml(m.payload)}</div>
     </div>`;
   }).join('');
-  box.scrollTop = box.scrollHeight;
+  if(scroll==='bottom') box.scrollTop = box.scrollHeight;
 }
 
 /* ---- send as the customer ---- */
@@ -405,7 +506,7 @@ $('#new-chat-btn').addEventListener('click',()=>{$('#search').focus();$('#search
 $('#pane-menu-btn').addEventListener('click',()=>{$('#search').focus();});
 $('#convo-search-btn').addEventListener('click',()=>{$('#convo-search').classList.toggle('hidden');$('#convo-search-input').focus();});
 $('#close-convo-search').addEventListener('click',()=>{$('#convo-search-input').value='';$('#convo-search').classList.add('hidden');loadMessages();});
-$('#convo-search-input').addEventListener('input',loadMessages);
+$('#convo-search-input').addEventListener('input',()=>renderMessages({scroll:'none'}));
 $('#convo-menu-btn').addEventListener('click',event=>{event.stopPropagation();$('#convo-menu').classList.toggle('hidden');});
 $('#menu-pin-chat').addEventListener('click',async ()=>{$('#convo-menu').classList.add('hidden');await togglePin(state.activePhone);renderChatList();});
 $('#menu-contact-info').addEventListener('click',()=>{const phone=businessPhones().find(item=>item.id===state.activePhone);alert(phone?`${phone.verified_name}\n+${phone.display_phone_number}\n${phone.business_name}`:'Contact unavailable');});
@@ -646,10 +747,41 @@ function connectSocket(){
   const scheme = location.protocol==='https:'?'wss':'ws';
   const wa = state.wa;
   state.socket = new WebSocket(`${scheme}://${location.host}/_sandbox/clients/${encodeURIComponent(wa)}`);
-  state.socket.onmessage = ()=>{ if(state.wa===wa) loadMessages(); };
+  state.socket.onmessage = event=>{
+    if(state.wa!==wa) return;
+    let data; try{ data = JSON.parse(event.data); }catch{ return; }
+    // Reloading the whole conversation per event was the real cost: a single
+    // arriving message re-fetched and re-rendered every message on screen.
+    if(data.event==='message' && data.message){
+      const message = data.message;
+      // The per-customer socket sends the Meta wire shape for inbound, which
+      // has no direction or timestamps the transcript needs, so those are
+      // filled from what the event does carry.
+      appendMessage(message.id ? {
+        id: message.id,
+        direction: data.direction || message.direction || (message.from ? 'inbound' : 'outbound'),
+        message_type: message.message_type || message.type,
+        payload: message.payload || message,
+        status: message.status || 'delivered',
+        created_at: message.created_at
+          || (message.timestamp ? new Date(Number(message.timestamp)*1000).toISOString() : new Date().toISOString()),
+        sender_id: message.sender_id, recipient_id: message.recipient_id,
+      } : message);
+      // Arriving while the chat is open means it has been seen. loadMessages()
+      // used to do this as a side effect of its full reload; appending has to
+      // do it explicitly, or the ticks never reach "read" and the badge sticks.
+      markRead([...state.messages.values()]);
+      return;
+    }
+    if(data.event==='status' && data.message_id){ applyStatus(data.message_id, data.status); return; }
+    if(data.event==='read'){ loadMessages(); }
+  };
   state.socket.onclose = ()=>{ if(state.wa===wa) state.reconnect=setTimeout(connectSocket,1500); };
 }
 
+$('#messages').addEventListener('click', event=>{
+  if(event.target.closest('#load-earlier')) loadEarlier();
+});
 $('#search').addEventListener('input', renderChatList);
 
 // keep business/customer names in sync with edits made in the console

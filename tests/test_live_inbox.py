@@ -226,3 +226,108 @@ def test_live_pushed_message_carries_a_parsed_payload(
     assert isinstance(payload, dict), f"payload arrived unparsed: {payload!r}"
     assert payload["text"]["body"] == "readable body"
     assert "payload_json" not in messages[0]["message"]
+
+
+def test_messages_paginate_backwards_without_gaps_or_repeats(
+    client: TestClient, headers: dict[str, str]
+) -> None:
+    """Keyset pagination, so pages stay stable while the chat is live.
+
+    OFFSET would drift as new messages arrive mid-conversation, silently
+    skipping or repeating rows, and it makes SQLite walk rows it is about to
+    throw away.
+    """
+    _open_window(client, "15551230020")
+    for index in range(12):
+        _send(client, headers, "15551230020", f"body {index}")
+
+    seen: list[str] = []
+    cursor: str | None = None
+    for _ in range(6):
+        url = "/_sandbox/messages?wa_id=15551230020&phone_number_id=PHONE_LOCAL&limit=5"
+        if cursor:
+            url += f"&before={cursor}"
+        page = client.get(url).json()
+        seen.extend(m["id"] for m in page["data"])
+        if not page["has_more"]:
+            break
+        cursor = page["next_before"]
+
+    assert len(seen) == len(set(seen)), "a message was returned on two pages"
+    everything = client.get(
+        "/_sandbox/messages?wa_id=15551230020&phone_number_id=PHONE_LOCAL&limit=500"
+    ).json()["data"]
+    assert set(seen) == {m["id"] for m in everything}, "paging lost messages"
+
+
+def test_message_pages_are_newest_first_and_report_more(
+    client: TestClient, headers: dict[str, str]
+) -> None:
+    _open_window(client, "15551230021")
+    for index in range(8):
+        _send(client, headers, "15551230021", f"body {index}")
+
+    first = client.get(
+        "/_sandbox/messages?wa_id=15551230021&phone_number_id=PHONE_LOCAL&limit=3"
+    ).json()
+    assert len(first["data"]) == 3
+    assert first["has_more"] is True
+    assert first["next_before"] == first["data"][-1]["id"]
+    times = [m["created_at"] for m in first["data"]]
+    assert times == sorted(times, reverse=True), times
+
+
+def test_last_page_reports_no_more_and_no_cursor(
+    client: TestClient, headers: dict[str, str]
+) -> None:
+    """has_more must be false on the final page, or the UI offers a dead button."""
+    _open_window(client, "15551230022")
+    _send(client, headers, "15551230022", "only one")
+    page = client.get(
+        "/_sandbox/messages?wa_id=15551230022&phone_number_id=PHONE_LOCAL&limit=50"
+    ).json()
+    assert page["has_more"] is False
+    assert page["next_before"] is None
+
+
+def test_unknown_before_cursor_is_rejected(client: TestClient) -> None:
+    """Silently ignoring a bad cursor would serve page one as if it were page five."""
+    response = client.get("/_sandbox/messages?before=wamid.definitely-not-real")
+    assert response.status_code == 400
+    assert "cursor" in response.json()["error"]
+
+
+def test_pagination_survives_messages_sharing_a_timestamp(
+    client: TestClient, headers: dict[str, str]
+) -> None:
+    """The rowid tiebreak is what makes this safe.
+
+    The sandbox can write several messages inside one clock tick, and a
+    created_at-only cursor would either drop them or replay them forever.
+    """
+    _open_window(client, "15551230023")
+    for index in range(6):
+        _send(client, headers, "15551230023", f"same tick {index}")
+
+    stamps = [
+        m["created_at"]
+        for m in client.get(
+            "/_sandbox/messages?wa_id=15551230023&phone_number_id=PHONE_LOCAL&limit=50"
+        ).json()["data"]
+    ]
+    # Only meaningful if the writes really did collide; assert the walk either way.
+    collided = len(stamps) != len(set(stamps))
+
+    seen: list[str] = []
+    cursor: str | None = None
+    for _ in range(10):
+        url = "/_sandbox/messages?wa_id=15551230023&phone_number_id=PHONE_LOCAL&limit=2"
+        if cursor:
+            url += f"&before={cursor}"
+        page = client.get(url).json()
+        seen.extend(m["id"] for m in page["data"])
+        if not page["has_more"]:
+            break
+        cursor = page["next_before"]
+    assert len(seen) == len(set(seen)), f"duplicate across pages (collided={collided})"
+    assert len(seen) == len(stamps), f"lost rows (collided={collided})"
