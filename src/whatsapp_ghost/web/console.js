@@ -1,6 +1,6 @@
 /* ===== WhatsApp Ghost developer console ===== */
 const state = { config:{}, apps:[], businesses:[], users:[], messages:[], webhooks:[], subscriptions:[], templates:[], hookPage:1,
-  unread:new Map(), activity:[], observer:null, observerRetry:null };
+  unread:new Map(), lastSeen:new Map(), activity:[], observer:null, observerRetry:null };
 const SIM_FEED_LIMIT = 40;
 let guideLanguage = 'curl';
 const $ = s => document.querySelector(s);
@@ -147,9 +147,11 @@ function userMatches(u, q){
 function renderUsers(){
   const q = (state.userFilter || '').trim().toLowerCase();
   const all = state.users;
-  // Unread first: whoever is waiting on a reply should never be scrolled to.
+  // Unread first (whoever is waiting on a reply should never be scrolled to),
+  // then most recently active, and only then by name.
   const shown = all.filter(u => userMatches(u, q))
     .sort((a,b)=> unreadFor(b.wa_id)-unreadFor(a.wa_id)
+      || lastSeenFor(b.wa_id)-lastSeenFor(a.wa_id)
       || String(a.display_name||'').localeCompare(String(b.display_name||'')));
   const counter = $('#user-count');
   if(counter) counter.textContent = q ? `${shown.length} of ${all.length}` : `${all.length}`;
@@ -173,7 +175,7 @@ function renderUsers(){
       <div class="avatar wa" style="background:${esc(color)}1f;color:${esc(color)}">${esc(initials(u.display_name))}</div>
       <div class="grow user-id">
         <b title="${name}">${name}${u.auto_created ? '<span class="badge gray" title="Created automatically on first message">auto</span>' : ''}</b>
-        <small title="+${esc(u.wa_id)}">+${esc(u.wa_id)}</small>
+        <small title="+${esc(u.wa_id)}">+${esc(u.wa_id)}${lastSeenFor(u.wa_id)?' · '+esc(new Date(lastSeenFor(u.wa_id)).toLocaleTimeString()):''}</small>
       </div>
       <div class="user-actions">
         ${unreadFor(u.wa_id)?`<span class="unread-pill" title="${unreadFor(u.wa_id)} unread">${unreadFor(u.wa_id)>99?'99+':unreadFor(u.wa_id)}</span>`:''}
@@ -902,8 +904,19 @@ async function loadSimUnread(){
     const totals = new Map();
     for(const row of (d.data||[])) totals.set(row.wa_id, (totals.get(row.wa_id)||0) + row.unread);
     state.unread = totals;
+    // Recency is tracked separately because unread alone cannot order the list:
+    // once everything is read every customer sits at 0 and the order freezes
+    // alphabetically, which is exactly the "not sorting" complaint.
+    const seen = new Map();
+    for(const row of (d.activity||[])){
+      const at = new Date(row.last_at).getTime();
+      if(at > (seen.get(row.wa_id)||0)) seen.set(row.wa_id, at);
+    }
+    state.lastSeen = seen;
   }catch{ /* keep the previous counts rather than blanking every badge */ }
 }
+
+function lastSeenFor(wa){ return state.lastSeen.get(wa) || 0; }
 
 function simMobileName(wa){
   const u = (state.users||[]).find(x => x.wa_id === wa);
@@ -944,17 +957,20 @@ function renderSimActivity(){
     box.innerHTML = '<div class="empty">Nothing yet. Any message to or from a test customer appears here as it happens.</div>';
     return;
   }
+  // The customer is always the subject; "to"/"from" carries the direction, so
+  // the two names keep their positions and the column reads down cleanly.
   box.innerHTML = state.activity.map(item=>`
-    <div class="item sim-act ${item.inbound?'inbound':'outbound'}">
-      <div class="sim-act-row">
-        <span class="badge ${item.inbound?'':'gray'}">${item.inbound?'FROM CUSTOMER':'TO CUSTOMER'}</span>
-        <div class="grow">
-          <b>${esc(simMobileName(item.wa))}</b>
-          <small>${item.inbound?'&#8594;':'&#8592;'} ${esc(simBusinessName(item.phoneId))} · ${esc(item.type)}</small>
+    <div class="sim-act ${item.inbound?'inbound':'outbound'}">
+      <span class="sim-act-rail" aria-hidden="true"></span>
+      <div class="sim-act-main">
+        <div class="sim-act-row">
+          <b class="sim-act-who">${esc(simMobileName(item.wa))}</b>
+          <span class="sim-act-dir">${item.inbound?'to':'from'} ${esc(simBusinessName(item.phoneId))}</span>
+          <span class="sim-act-type">${esc(item.type)}</span>
+          <span class="sim-act-time">${esc(new Date(item.at).toLocaleTimeString())}</span>
         </div>
-        <small class="sim-act-time">${esc(new Date(item.at).toLocaleTimeString())}</small>
+        <div class="sim-act-body">${esc(item.text || '(no body)')}</div>
       </div>
-      <div class="sim-act-body">${esc(item.text || '(no body)')}</div>
     </div>`).join('');
 }
 
@@ -1018,10 +1034,14 @@ async function handleConsoleEvent(data){
   }
   if(data.event === 'message' && data.wa_id){
     const message = data.message || {};
-    const inbound = (message.direction||'') === 'inbound' || !!message.from;
+    const inbound = data.direction === 'inbound'
+      || (message.direction||'') === 'inbound' || !!message.from;
     pushSimActivity({
       wa: data.wa_id,
-      phoneId: message.phone_number_id || (inbound ? message.recipient_id : message.sender_id) || '',
+      // An inbound Meta payload carries no recipient, so the event's own
+      // phone_number_id is the only source for the business it reached.
+      phoneId: data.phone_number_id || message.phone_number_id
+        || (inbound ? message.recipient_id : message.sender_id) || '',
       inbound,
       type: message.message_type || message.type || 'text',
       text: simSummary(message),

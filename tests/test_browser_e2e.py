@@ -454,3 +454,101 @@ def test_console_returns_to_the_page_you_were_on_after_a_reload(
     expect(page.locator("#webhooks")).to_have_class(re.compile(r"active"))
     page.reload()
     expect(page.locator("#webhooks")).to_have_class(re.compile(r"active"))
+
+
+def test_console_customers_sort_by_recency_when_nothing_is_unread(
+    page: Page, live_server: tuple[str, Path]
+) -> None:
+    """Unread alone cannot order the list.
+
+    Once every message is read each customer sits at 0 unread, and sorting by
+    unread then name froze the order alphabetically forever - a customer who
+    had just messaged never moved. Recency is the tiebreak that fixes it.
+    """
+    base_url, _ = live_server
+    # Names are generated, so pick numbers and read back what they were called.
+    older, newer = "15550008001", "15550008002"
+    for wa in (older, newer):
+        httpx.post(f"{base_url}/_sandbox/phones", json={"wa_id": wa}, timeout=5)
+    page.goto(base_url + "/console")
+    page.locator('.side-link[data-page="simulator"]').click()
+    expect(page.locator("#sim-live")).to_have_class(re.compile(r"on"))
+
+    def names() -> list[str]:
+        return [t.strip() for t in page.locator("#user-list .user-id b").all_inner_texts()]
+
+    def name_of(wa: str) -> str:
+        row = httpx.get(f"{base_url}/_sandbox/phones", timeout=5).json()["data"]
+        return next(u["display_name"] for u in row if u["wa_id"] == wa)
+
+    # Inbound only, so nothing is ever unread: unread counts outbound messages.
+    for wa in (older, newer):
+        httpx.post(
+            f"{base_url}/_sandbox/phones/{wa}/messages",
+            json={"phone_number_id": "PHONE_LOCAL", "type": "text", "text": "hello"},
+            timeout=5,
+        )
+
+    # Other tests in this module share the server and may leave customers with
+    # unread messages, which outrank recency by design. Compare only these two.
+    shown = names()
+    assert name_of(newer) in shown and name_of(older) in shown
+    assert shown.index(name_of(newer)) < shown.index(name_of(older)), shown
+
+    # And the order must follow new activity live, with no reload.
+    httpx.post(
+        f"{base_url}/_sandbox/phones/{older}/messages",
+        json={"phone_number_id": "PHONE_LOCAL", "type": "text", "text": "now me"},
+        timeout=5,
+    )
+
+    def older_now_leads() -> bool:
+        current = names()
+        return current.index(name_of(older)) < current.index(name_of(newer))
+
+    page.wait_for_function(
+        """([older, newer]) => {
+            const names = [...document.querySelectorAll('#user-list .user-id b')]
+              .map(e => e.textContent.trim());
+            return names.indexOf(older) > -1 && names.indexOf(older) < names.indexOf(newer);
+        }""",
+        arg=[name_of(older), name_of(newer)],
+        timeout=5000,
+    )
+    assert older_now_leads(), names()
+
+
+def test_phone_chat_list_reorders_by_most_recent_message(
+    page: Page, live_server: tuple[str, Path]
+) -> None:
+    """Chats must move to the top when they receive something, like a real client.
+
+    Before this the order was whatever businessPhones() happened to return, so
+    the chat you had just been messaged on stayed wherever it was.
+    """
+    base_url, _ = live_server
+    second = httpx.post(
+        f"{base_url}/_sandbox/businesses/WABA_LOCAL/phone-numbers",
+        json={"verified_name": "Second Desk", "display_phone_number": "15550009999"},
+        timeout=5,
+    ).json()["id"]
+    wa = "15550008100"
+    httpx.post(f"{base_url}/_sandbox/phones", json={"wa_id": wa}, timeout=5)
+    for phone_id in ("PHONE_LOCAL", second):
+        httpx.post(
+            f"{base_url}/_sandbox/phones/{wa}/messages",
+            json={"phone_number_id": phone_id, "type": "text", "text": "hi"},
+            timeout=5,
+        )
+
+    page.goto(f"{base_url}/phone?phone={wa}&business=PHONE_LOCAL")
+    # The second desk spoke last, so it leads.
+    expect(page.locator(".chat-row .c-name").first).to_have_text("Second Desk")
+
+    # A message on the other chat moves it up, live.
+    httpx.post(
+        f"{base_url}/_sandbox/phones/{wa}/messages",
+        json={"phone_number_id": "PHONE_LOCAL", "type": "text", "text": "now me"},
+        timeout=5,
+    )
+    expect(page.locator(".chat-row .c-name").first).not_to_have_text("Second Desk")

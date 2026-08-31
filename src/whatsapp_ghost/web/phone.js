@@ -490,15 +490,20 @@ function mobileName(wa){
 
 /* One arriving message, summarised for the feed. The observer payload is the
    stored message row, so it is reduced here rather than re-fetched. */
-function feedEntry(wa, message){
+function feedEntry(wa, message, inbound, phoneNumberId){
   const value = messageText({message_type:message.message_type||message.type,
                              payload:message.payload||message});
   const text = value.kind==='media' ? (value.label + (value.caption?': '+value.caption:''))
              : value.kind==='template' ? (value.text || value.name)
              : value.text;
+  // "inbound" here is the sandbox's own sense: from the simulated customer to
+  // the business. The business number is on the opposite end either way.
+  // An inbound Meta payload carries no recipient at all, so the event's own
+  // phone_number_id is the only source for which business it reached.
+  const phoneId = phoneNumberId || message.phone_number_id
+    || (inbound ? message.recipient_id : message.sender_id) || '';
   return {
-    wa,
-    phoneId: message.phone_number_id || message.sender_id || '',
+    wa, phoneId, inbound: !!inbound,
     kind: value.kind==='template' ? 'template' : (value.kind==='media' ? (value.mtype||'media') : ''),
     text: text || '(no body)',
     at: message.created_at || Date.now(),
@@ -518,16 +523,25 @@ function renderFeed(){
     box.innerHTML = '<div class="feed-empty">Waiting for messages.<br>Anything sent to any mobile shows up here.</div>';
     return;
   }
-  box.innerHTML = state.feed.map(item=>`
-    <button type="button" class="feed-item" data-open-wa="${esc(item.wa)}" data-open-business="${esc(item.phoneId)}">
-      <div class="feed-top">
-        <span class="feed-who">${esc(mobileName(item.wa))}</span>
-        <span class="feed-arrow">&#8592;</span>
-        <span class="feed-from">${esc(businessName(item.phoneId))}</span>
-        <span class="feed-time">${esc(fmtTime(item.at))}</span>
+  box.innerHTML = state.feed.map(item=>{
+    // The mobile is always the subject of the row; the direction rail and the
+    // preposition say which way it went, so the two names never swap places
+    // and the column stays scannable.
+    const via = item.inbound ? 'to' : 'from';
+    return `
+    <button type="button" class="feed-item ${item.inbound?'is-out':'is-in'}"
+            data-open-wa="${esc(item.wa)}" data-open-business="${esc(item.phoneId)}">
+      <span class="feed-rail" aria-hidden="true"></span>
+      <div class="feed-main">
+        <div class="feed-top">
+          <span class="feed-who">${esc(mobileName(item.wa))}</span>
+          <span class="feed-time">${esc(fmtTime(item.at))}</span>
+        </div>
+        <div class="feed-sub">${esc(via)} ${esc(businessName(item.phoneId))}${item.kind?` &middot; ${esc(item.kind)}`:''}</div>
+        <div class="feed-body">${esc(item.text)}</div>
       </div>
-      <div class="feed-body">${item.kind?`<span class="feed-kind">${esc(item.kind)}</span>`:''}${esc(item.text)}</div>
-    </button>`).join('');
+    </button>`;
+  }).join('');
 }
 
 /* Clicking any row opens that mobile in its own tab, so each mobile keeps its
@@ -605,11 +619,13 @@ async function handleObserverEvent(data){
     return;
   }
   if(data.event==='message' && data.wa_id){
-    // Only messages arriving FROM a business count as something to read; the
-    // echo of what a mobile itself sent is not a notification.
+    // Both directions are shown: the feed is a record of traffic, not just of
+    // notifications. Only inbound-from-business counts toward unread, and that
+    // distinction is carried on the entry rather than by dropping messages.
     const message = data.message || {};
-    const inbound = (message.direction||'') === 'inbound' || !!message.from;
-    if(!inbound) pushFeed(feedEntry(data.wa_id, message));
+    const inbound = data.direction === 'inbound'
+      || (message.direction||'') === 'inbound' || !!message.from;
+    pushFeed(feedEntry(data.wa_id, message, inbound, data.phone_number_id));
     await loadUnread();
     renderMobiles();
     renderChatList();

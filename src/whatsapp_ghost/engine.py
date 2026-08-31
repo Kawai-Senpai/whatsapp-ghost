@@ -262,7 +262,16 @@ class Engine:
         )
         self.store.execute("UPDATE conversations SET last_user_message_at=?,service_window_expires_at=? WHERE id=?", (now.isoformat(), expires.isoformat(), conversation_id))
         await self.queue_webhook(phone_id, "messages", contacts=[{"profile": {"name": self.user(wa_id)["display_name"]}, "wa_id": wa_id}], messages=[normalized])
-        await self.broadcast(wa_id, {"event": "message", "message": normalized})
+        # phone_number_id travels beside the message, never inside it: normalized
+        # is the exact Meta wire shape that also goes to webhooks, and an
+        # invented field there would make the sandbox lie about the real API.
+        # Without it a client cannot tell which business an inbound went to,
+        # because the Meta inbound payload simply does not carry the recipient.
+        await self.broadcast(
+            wa_id,
+            {"event": "message", "message": normalized,
+             "phone_number_id": phone_id, "direction": "inbound"},
+        )
         return normalized
 
     def webhook_envelope(self, phone_id: str, field: str, **content: Any) -> dict[str, Any]:

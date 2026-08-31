@@ -369,12 +369,22 @@ textarea.field{min-height:88px;resize:vertical}
 .live-pill.on{background:#d8f5e3;color:#0a7d3f}
 .unread-pill{background:#25D366;color:#fff;border-radius:11px;min-width:22px;height:22px;
   padding:0 7px;display:inline-grid;place-items:center;font-size:12px;font-weight:700}
-.sim-act{padding:10px 12px}
-.sim-act-row{display:flex;align-items:center;gap:10px}
-.sim-act-row .grow{min-width:0}
-.sim-act-row b{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.sim-act-row small{color:var(--muted)}
-.sim-act-time{color:var(--muted);flex:0 0 auto}
-.sim-act-body{margin-top:6px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.sim-act.inbound{border-left:3px solid #25D366}
-.sim-act.outbound{border-left:3px solid var(--fb-blue,#1877f2)}
+/* One row per message, both directions. A colour rail on the leading edge
+   carries the direction, so the row keeps a single stable reading order
+   instead of swapping the two names around. */
+.sim-act{display:flex;gap:11px;padding:9px 12px 9px 0;border-bottom:1px solid var(--line,#e6e9ec)}
+.sim-act:last-child{border-bottom:0}
+.sim-act-rail{flex:0 0 3px;border-radius:0 2px 2px 0;background:#c9d0d6}
+.sim-act.inbound .sim-act-rail{background:#25D366}
+.sim-act.outbound .sim-act-rail{background:var(--fb-blue,#1877f2)}
+.sim-act-main{min-width:0;flex:1}
+.sim-act-row{display:flex;align-items:baseline;gap:7px;min-width:0}
+.sim-act-who{flex:0 0 auto;max-width:40%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sim-act-dir{color:var(--muted);font-size:12px;min-width:0;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
+.sim-act-type{flex:0 0 auto;font-size:9px;letter-spacing:.5px;text-transform:uppercase;
+  color:var(--muted);background:#eef1f4;border-radius:3px;padding:1px 5px}
+.sim-act-time{margin-left:auto;flex:0 0 auto;color:var(--muted);font-size:12px;
+  font-variant-numeric:tabular-nums}
+.sim-act-body{margin-top:3px;color:var(--ink,#1c1e21);overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
