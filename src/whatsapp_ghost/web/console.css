@@ -372,7 +372,11 @@ textarea.field{min-height:88px;resize:vertical}
 /* One row per message, both directions. A colour rail on the leading edge
    carries the direction, so the row keeps a single stable reading order
    instead of swapping the two names around. */
-.sim-act{display:flex;gap:11px;padding:9px 12px 9px 0;border-bottom:1px solid var(--line,#e6e9ec)}
+.sim-act{display:flex;gap:11px;padding:9px 12px 9px 0;border:0;border-bottom:1px solid var(--line,#e6e9ec);
+  width:100%;text-align:left;background:none;font:inherit;color:inherit;cursor:pointer;
+  transition:background .15s ease}
+.sim-act:hover{background:#f5f7f9}
+.sim-act:focus-visible{outline:2px solid var(--fb-blue,#1877f2);outline-offset:-2px}
 .sim-act:last-child{border-bottom:0}
 .sim-act-rail{flex:0 0 3px;border-radius:0 2px 2px 0;background:#c9d0d6}
 .sim-act.inbound .sim-act-rail{background:#25D366}

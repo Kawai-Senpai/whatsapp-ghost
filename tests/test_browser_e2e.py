@@ -552,3 +552,81 @@ def test_phone_chat_list_reorders_by_most_recent_message(
         timeout=5,
     )
     expect(page.locator(".chat-row .c-name").first).not_to_have_text("Second Desk")
+
+
+def test_console_activity_rows_open_the_exact_conversation(
+    page: Page, live_server: tuple[str, Path]
+) -> None:
+    """A row must open its own customer AND its own business.
+
+    Opening the first business would be wrong as soon as more than one sender
+    exists, which is the normal case this sandbox is for.
+    """
+    base_url, _ = live_server
+    second = httpx.post(
+        f"{base_url}/_sandbox/businesses/WABA_LOCAL/phone-numbers",
+        json={"verified_name": "Row Target Desk", "display_phone_number": "15550009123"},
+        timeout=5,
+    ).json()["id"]
+    wa = "15550008200"
+    httpx.post(f"{base_url}/_sandbox/phones", json={"wa_id": wa}, timeout=5)
+
+    page.goto(base_url + "/console")
+    page.locator('.side-link[data-page="simulator"]').click()
+    expect(page.locator("#sim-live")).to_have_class(re.compile(r"on"))
+
+    httpx.post(
+        f"{base_url}/_sandbox/phones/{wa}/messages",
+        json={"phone_number_id": second, "type": "text", "text": "row target body"},
+        timeout=5,
+    )
+    row = page.locator(f'.sim-act[data-open-wa="{wa}"]').first
+    expect(row).to_be_visible()
+    expect(row).to_contain_text("Row Target Desk")
+    expect(row).to_have_attribute("data-open-business", second)
+
+    # The click opens a tab; capture the URL rather than managing a popup.
+    opened = page.evaluate(
+        """() => new Promise(resolve => {
+            const original = window.open;
+            window.open = (url) => { window.open = original; resolve(url); return null; };
+            document.querySelector('.sim-act[data-open-wa]').click();
+        })"""
+    )
+    assert f"phone={wa}" in opened, opened
+    assert f"business={second}" in opened, opened
+
+
+def test_live_feeds_show_both_directions(page: Page, live_server: tuple[str, Path]) -> None:
+    """The feed is a record of traffic, not only of notifications.
+
+    Outbound-only was the original behaviour and hid the customer's own replies,
+    which made it useless for following a conversation as it happened.
+    """
+    base_url, _ = live_server
+    wa = "15550008300"
+    _seed_conversation(base_url, wa, "Both Ways", "business speaking")
+
+    page.goto(f"{base_url}/phone?phone={wa}&business=PHONE_LOCAL")
+    expect(page.locator("#inbox-status")).to_have_class(re.compile(r"live"))
+
+    httpx.post(
+        f"{base_url}/v25.0/PHONE_LOCAL/messages",
+        headers={"Authorization": "Bearer browser-token"},
+        json={"messaging_product": "whatsapp", "to": wa, "type": "text",
+              "text": {"body": "from the business"}},
+        timeout=5,
+    )
+    httpx.post(
+        f"{base_url}/_sandbox/phones/{wa}/messages",
+        json={"phone_number_id": "PHONE_LOCAL", "type": "text", "text": "from the customer"},
+        timeout=5,
+    )
+
+    feed = page.locator("#feed")
+    expect(feed).to_contain_text("from the business")
+    expect(feed).to_contain_text("from the customer")
+    # Both rails must be represented, and an inbound row must still name the
+    # business it reached - the Meta inbound payload carries no recipient.
+    expect(feed.locator(".feed-item.is-in")).not_to_have_count(0)
+    expect(feed.locator(".feed-item.is-out").first).to_contain_text("Ghost Demo")

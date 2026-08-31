@@ -960,7 +960,9 @@ function renderSimActivity(){
   // The customer is always the subject; "to"/"from" carries the direction, so
   // the two names keep their positions and the column reads down cleanly.
   box.innerHTML = state.activity.map(item=>`
-    <div class="sim-act ${item.inbound?'inbound':'outbound'}">
+    <button type="button" class="sim-act ${item.inbound?'inbound':'outbound'}"
+            data-open-wa="${esc(item.wa)}" data-open-business="${esc(item.phoneId)}"
+            title="Open this conversation in the phone simulator">
       <span class="sim-act-rail" aria-hidden="true"></span>
       <div class="sim-act-main">
         <div class="sim-act-row">
@@ -971,7 +973,7 @@ function renderSimActivity(){
         </div>
         <div class="sim-act-body">${esc(item.text || '(no body)')}</div>
       </div>
-    </div>`).join('');
+    </button>`).join('');
 }
 
 /* Seed the list on first open so it is not empty before anything new arrives. */
@@ -989,6 +991,17 @@ async function loadSimActivity(){
   }catch{ state.activity = []; }
   renderSimActivity();
 }
+
+/* Delegated so the rows keep working across every live re-render. Opens the
+   exact pair the row describes - that customer, that business - rather than
+   the first business, which is what openPhoneTabFor falls back to. */
+document.addEventListener('click', event=>{
+  const row = event.target.closest('.sim-act[data-open-wa]');
+  if(!row) return;
+  const wa = row.dataset.openWa;
+  const biz = row.dataset.openBusiness || state.businesses[0]?.phone_numbers[0]?.id || '';
+  window.open(phoneUrl(wa, biz), 'ghost-phone-' + wa);
+});
 
 function simLive(live){
   const pill = $('#sim-live');
