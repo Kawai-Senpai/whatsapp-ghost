@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import secrets
 import shutil
@@ -41,7 +42,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         settings.data_dir.mkdir(parents=True, exist_ok=True)
         settings.media_dir.mkdir(parents=True, exist_ok=True)
         store.initialize(settings.access_token, settings.app_secret)
-        yield
+        # Sync route handlers run off the loop and cannot find it themselves.
+        engine.loop = asyncio.get_running_loop()
+        try:
+            yield
+        finally:
+            engine.loop = None
 
     app = FastAPI(
         title="WhatsApp Ghost",
@@ -240,6 +246,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def sandbox_phones() -> dict[str, Any]:
         return {"data": rows(store.all("SELECT * FROM simulated_users ORDER BY created_at"))}
 
+    @app.get("/_sandbox/unread")
+    def sandbox_unread() -> dict[str, Any]:
+        """Unread counts per simulated customer, per business number.
+
+        Unread is derived from message status rather than tracked separately:
+        an outbound message the customer has not opened yet sits at accepted /
+        sent / delivered, and opening the chat POSTs .../read which moves it to
+        "read". That is the same signal the sandbox already reports to webhooks,
+        so a badge here can never disagree with a read receipt, and it survives
+        a page reload for free.
+        """
+        result = store.all(
+            "SELECT c.user_wa_id AS wa_id, c.phone_number_id AS phone_number_id,"
+            " COUNT(*) AS unread, MAX(m.created_at) AS last_at"
+            " FROM messages m JOIN conversations c ON c.id=m.conversation_id"
+            " WHERE m.direction='outbound' AND m.status IN ('accepted','sent','delivered')"
+            " GROUP BY c.user_wa_id, c.phone_number_id"
+        )
+        return {"data": rows(result)}
+
     @app.post("/_sandbox/phones", status_code=201)
     def sandbox_phone_create(body: dict[str, Any] = Body(...)):
         wa_id = normalize_phone(str(body.get("wa_id", "")))
@@ -258,7 +284,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 0,
             ),
         )
-        return dict(engine.user(wa_id))
+        created = dict(engine.user(wa_id))
+        engine._announce({"event": "phone_created", "wa_id": wa_id, "user": created})
+        return created
 
     @app.delete("/_sandbox/phones/{wa_id}")
     def sandbox_phone_delete(wa_id: str):
@@ -271,6 +299,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             store.execute("DELETE FROM messages WHERE conversation_id=?", (conversation["id"],))
         store.execute("DELETE FROM conversations WHERE user_wa_id=?", (normalized,))
         store.execute("DELETE FROM simulated_users WHERE wa_id=?", (normalized,))
+        engine._announce({"event": "phone_deleted", "wa_id": normalized})
         return {"success": True}
 
     @app.patch("/_sandbox/phones/{wa_id}")
@@ -288,7 +317,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 normalize_phone(wa_id),
             ),
         )
-        return dict(engine.user(wa_id))
+        updated = dict(engine.user(wa_id))
+        engine._announce({"event": "phone_updated", "wa_id": normalize_phone(wa_id), "user": updated})
+        return updated
 
     @app.post("/_sandbox/phones/{wa_id}/messages", status_code=201)
     async def sandbox_inbound(wa_id: str, body: dict[str, Any] = Body(...)):
@@ -443,6 +474,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return JSONResponse({"error": "delivery not found"}, status_code=404)
         await engine.deliver_webhook(delivery_id)
         return dict(store.one("SELECT * FROM webhook_deliveries WHERE id=?", (delivery_id,)))
+
+    @app.websocket("/_sandbox/observer")
+    async def observer_socket(websocket: WebSocket):
+        """Every sandbox event, tagged with the wa_id it belongs to.
+
+        Read-only on purpose: sending is still done over the per-customer
+        socket, which knows which customer it is acting as. This one exists so a
+        page can watch mobiles it is not currently acting as.
+        """
+        await websocket.accept()
+        engine.observers.add(websocket)
+        try:
+            while True:
+                await websocket.receive_text()
+        except WebSocketDisconnect:
+            pass
+        finally:
+            engine.observers.discard(websocket)
 
     @app.websocket("/_sandbox/clients/{wa_id}")
     async def client_socket(websocket: WebSocket, wa_id: str):

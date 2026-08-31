@@ -17,6 +17,19 @@
     <symbol id="p-send" viewBox="0 0 24 24"><path d="M3 20l18-8L3 4l3 8-3 8z"/><path d="M6 12h15"/></symbol>
   </defs></svg>
 
+  <!-- Cross-mobile inbox: which mobile got what, without hunting for it -->
+  <aside class="inbox" id="inbox">
+    <header class="inbox-head">
+      <b>Live inbox</b>
+      <span class="inbox-dot" id="inbox-status" title="Disconnected"></span>
+      <div class="spacer"></div>
+      <button type="button" class="inbox-clear" id="inbox-clear" title="Clear this feed">Clear</button>
+      <button type="button" class="inbox-toggle" id="inbox-toggle" title="Collapse">‹</button>
+    </header>
+    <div class="mobiles" id="mobiles"></div>
+    <div class="feed" id="feed"></div>
+  </aside>
+
   <div class="app" id="app">
     <!-- Left pane -->
     <section class="pane">

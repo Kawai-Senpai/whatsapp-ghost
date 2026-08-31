@@ -34,6 +34,15 @@ class Engine:
         self.store = store
         self.settings = settings
         self.listeners: dict[str, set[Any]] = {}
+        # Sockets watching every simulated customer at once, not just one wa_id.
+        # The phone UI uses this for its cross-mobile inbox: a page subscribed
+        # only to its own wa_id is structurally unable to learn that a *different*
+        # mobile received a message, which is what forced a manual refresh.
+        self.observers: set[Any] = set()
+        # The loop the app runs on, captured at startup. Sync route handlers run
+        # in a threadpool where get_running_loop() raises, so an announcement
+        # made from one has to be handed back to this loop explicitly.
+        self.loop: Any = None
 
     def phone(self, phone_id: str):
         return self.store.one("SELECT * FROM phone_numbers WHERE id=?", (phone_id,))
@@ -57,7 +66,39 @@ class Engine:
             (normalized, generated_name(normalized), 1, 0, self.store.now().isoformat(),
              generated_color(normalized), 1),
         )
-        return self.user(normalized)
+        created = self.user(normalized)
+        # ensure_user is sync and is called from both sync request handlers and
+        # async engine paths, so the announcement is scheduled rather than
+        # awaited. Fire-and-forget is right here: a dropped "phone created"
+        # notice costs a stale sidebar, never a lost message, and making this
+        # async would force every caller to become async too.
+        self._announce({"event": "phone_created", "wa_id": normalized, "user": dict(created)})
+        return created
+
+    def _announce(self, payload: dict[str, Any]) -> None:
+        """Publish to observers from code that may not be on the event loop.
+
+        FastAPI runs a plain ``def`` route in a threadpool, where
+        get_running_loop() raises - so scheduling on "the current loop" silently
+        did nothing for exactly the endpoints that create and delete phones,
+        which is most of them. The loop captured at startup is used instead, via
+        run_coroutine_threadsafe when we are off it.
+
+        Fire-and-forget on purpose: a dropped announcement costs a stale sidebar
+        until the next event, never a lost message, and awaiting it would force
+        every sync caller to become async.
+        """
+        loop = self.loop
+        if loop is None or loop.is_closed():
+            return
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is loop:
+            loop.create_task(self.publish(payload))
+        else:
+            asyncio.run_coroutine_threadsafe(self.publish(payload), loop)
 
     def conversation(self, phone_id: str, wa_id: str) -> str:
         wa_id = normalize_phone(wa_id)
@@ -289,6 +330,26 @@ class Engine:
                 dead.append(socket)
         for socket in dead:
             self.listeners.get(wa_id, set()).discard(socket)
+        # Observers get the same event tagged with whose mobile it belongs to.
+        # Without wa_id the receiving page cannot tell which mobile to badge,
+        # and the per-wa_id payload above deliberately does not carry it.
+        await self.publish({**payload, "wa_id": wa_id})
+
+    async def publish(self, payload: dict[str, Any]) -> None:
+        """Fan an event out to every observer socket.
+
+        Kept separate from broadcast() so events that belong to no single
+        customer - a phone being auto-created, for one - still reach the
+        cross-mobile inbox.
+        """
+        dead = []
+        for socket in self.observers:
+            try:
+                await socket.send_json(payload)
+            except Exception:
+                dead.append(socket)
+        for socket in dead:
+            self.observers.discard(socket)
 
     def media_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Fill in the media fields Meta always sends on inbound messages.

@@ -6,7 +6,11 @@ const state = {
   activePhone: params.get('business') || '',  // business phone_number_id we're chatting with
   socket:null, reconnect:null, reading:false, messages:new Map(), replying:null, loadSequence:0,
   pinned:new Set(),  // server-backed; loaded per customer from /_sandbox/phones/{wa}/pins
+  observer:null, observerRetry:null,   // firehose socket: every mobile, not just ours
+  feed:[],                              // newest-first arrivals shown in the live inbox
+  unread:new Map(),                     // wa_id -> unread count, derived from message status
 };
+const FEED_LIMIT = 60;
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const initials = s => (s||'?').trim().slice(0,2).toUpperCase();
@@ -155,6 +159,10 @@ async function boot(){
     if(!state.activePhone && flat.length) state.activePhone = flat[0].id;
     if(state.activePhone) openChat(state.activePhone);
     connectSocket();
+    await loadUnread();
+    renderMobiles();
+    renderFeed();
+    connectObserver();
   }catch(e){ alert(e.message); }
 }
 
@@ -233,6 +241,10 @@ async function loadMessages(){
     try{
       await req(`/_sandbox/phones/${encodeURIComponent(state.wa)}/read`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone_number_id:state.activePhone})});
       unread.forEach(m=>m.status='read');
+      // Reading is what clears the badge, so refresh it here rather than
+      // waiting for an observer event: the read POST does not broadcast to
+      // this page's own wa_id.
+      await loadUnread(); renderMobiles();
     }finally{ state.reading=false; }
   }
   const box = $('#messages');
@@ -385,6 +397,188 @@ $('#file-input').addEventListener('change', async e=>{
   }
   catch(x){ alert(x.message); }
 });
+
+/* ===== cross-mobile live inbox =====
+   The per-customer socket at /_sandbox/clients/{wa} only carries events for the
+   one customer this page is acting as, so it can never tell you that a
+   *different* mobile received something. /_sandbox/observer carries every
+   event tagged with its wa_id, which is what makes the panel below possible
+   without polling or a manual refresh. */
+
+async function loadUnread(){
+  // Unread is derived server-side from message status, so it is already correct
+  // on a cold load and cannot drift from the read receipts the sandbox sends.
+  try{
+    const d = await req('/_sandbox/unread');
+    const totals = new Map();
+    for(const row of (d.data||[])) totals.set(row.wa_id, (totals.get(row.wa_id)||0) + row.unread);
+    state.unread = totals;
+  }catch{ /* leave the previous counts rather than blanking every badge */ }
+}
+
+function unreadFor(wa){ return state.unread.get(wa) || 0; }
+
+function renderMobiles(){
+  const box = $('#mobiles');
+  if(!box) return;
+  if(!state.users.length){ box.innerHTML = '<div class="feed-empty">No mobiles yet.</div>'; return; }
+  // Most unread first, so whatever needs attention is always at the top.
+  const ordered = [...state.users].sort((a,b)=>
+    unreadFor(b.wa_id)-unreadFor(a.wa_id) || String(a.display_name||'').localeCompare(String(b.display_name||'')));
+  box.innerHTML = ordered.map(u=>{
+    const count = unreadFor(u.wa_id);
+    const mine = u.wa_id===state.wa;
+    return `<div class="mobile-row ${count?'unread':''} ${mine?'current':''}" data-open-wa="${esc(u.wa_id)}"
+        title="${esc(u.display_name||u.wa_id)} · +${esc(u.wa_id)}">
+      <div class="mobile-av" style="background:${esc(u.color||'#6a7175')}">${esc(initials(u.display_name||u.wa_id))}</div>
+      <div class="mobile-main">
+        <div class="mobile-name">${esc(u.display_name||u.wa_id)}${u.auto_created?'<span class="tag-auto">auto</span>':''}</div>
+        <div class="mobile-num">+${esc(u.wa_id)}${mine?' · this tab':''}</div>
+      </div>
+      ${count?`<span class="badge-unread">${count>99?'99+':count}</span>`:''}
+    </div>`;
+  }).join('');
+}
+
+function businessName(phoneId){
+  const p = businessPhones().find(x=>x.id===phoneId);
+  return p ? p.verified_name : (phoneId || 'Business');
+}
+function mobileName(wa){
+  const u = state.users.find(x=>x.wa_id===wa);
+  return u ? (u.display_name||wa) : wa;
+}
+
+/* One arriving message, summarised for the feed. The observer payload is the
+   stored message row, so it is reduced here rather than re-fetched. */
+function feedEntry(wa, message){
+  const value = messageText({message_type:message.message_type||message.type,
+                             payload:message.payload||message});
+  const text = value.kind==='media' ? (value.label + (value.caption?': '+value.caption:''))
+             : value.kind==='template' ? (value.text || value.name)
+             : value.text;
+  return {
+    wa,
+    phoneId: message.phone_number_id || message.sender_id || '',
+    kind: value.kind==='template' ? 'template' : (value.kind==='media' ? (value.mtype||'media') : ''),
+    text: text || '(no body)',
+    at: message.created_at || Date.now(),
+  };
+}
+
+function pushFeed(entry){
+  state.feed.unshift(entry);
+  if(state.feed.length > FEED_LIMIT) state.feed.length = FEED_LIMIT;
+  renderFeed();
+}
+
+function renderFeed(){
+  const box = $('#feed');
+  if(!box) return;
+  if(!state.feed.length){
+    box.innerHTML = '<div class="feed-empty">Waiting for messages.<br>Anything sent to any mobile shows up here.</div>';
+    return;
+  }
+  box.innerHTML = state.feed.map(item=>`
+    <button type="button" class="feed-item" data-open-wa="${esc(item.wa)}" data-open-business="${esc(item.phoneId)}">
+      <div class="feed-top">
+        <span class="feed-who">${esc(mobileName(item.wa))}</span>
+        <span class="feed-arrow">&#8592;</span>
+        <span class="feed-from">${esc(businessName(item.phoneId))}</span>
+        <span class="feed-time">${esc(fmtTime(item.at))}</span>
+      </div>
+      <div class="feed-body">${item.kind?`<span class="feed-kind">${esc(item.kind)}</span>`:''}${esc(item.text)}</div>
+    </button>`).join('');
+}
+
+/* Clicking any row opens that mobile in its own tab, so each mobile keeps its
+   own page, its own per-customer socket and its own read state. Clicking the
+   mobile this tab already is just focuses the relevant chat instead. */
+function openMobile(wa, phoneId){
+  if(wa === state.wa){
+    if(phoneId && phoneId !== state.activePhone) openChat(phoneId);
+    return;
+  }
+  const url = new URL('/phone', location.origin);
+  url.searchParams.set('phone', wa);
+  if(phoneId) url.searchParams.set('business', phoneId);
+  window.open(url.toString(), 'ghost-phone-'+wa);
+}
+
+document.addEventListener('click', event=>{
+  const row = event.target.closest('[data-open-wa]');
+  if(!row) return;
+  openMobile(row.dataset.openWa, row.dataset.openBusiness || '');
+});
+
+$('#inbox-clear').addEventListener('click', ()=>{ state.feed=[]; renderFeed(); });
+$('#inbox-toggle').addEventListener('click', ()=>{
+  const inbox=$('#inbox'), collapsed=inbox.classList.toggle('collapsed');
+  $('#inbox-toggle').textContent = collapsed ? '›' : '‹';
+  try{ localStorage.setItem('ghost.inbox.collapsed', collapsed?'1':'0'); }catch{}
+});
+try{
+  if(localStorage.getItem('ghost.inbox.collapsed')==='1'){
+    $('#inbox').classList.add('collapsed'); $('#inbox-toggle').textContent='›';
+  }
+}catch{ /* private mode: just start expanded */ }
+
+function observerStatus(live){
+  const dot=$('#inbox-status');
+  if(!dot) return;
+  dot.classList.toggle('live', !!live);
+  dot.title = live ? 'Live' : 'Reconnecting';
+}
+
+function connectObserver(){
+  if(state.observer){ state.observer.onclose=null; state.observer.close(); }
+  if(state.observerRetry) clearTimeout(state.observerRetry);
+  const scheme = location.protocol==='https:'?'wss':'ws';
+  state.observer = new WebSocket(`${scheme}://${location.host}/_sandbox/observer`);
+  state.observer.onopen = ()=>observerStatus(true);
+  state.observer.onmessage = async event=>{
+    let data; try{ data = JSON.parse(event.data); }catch{ return; }
+    await handleObserverEvent(data);
+  };
+  state.observer.onclose = ()=>{
+    observerStatus(false);
+    state.observerRetry = setTimeout(connectObserver, 1500);
+  };
+}
+
+async function handleObserverEvent(data){
+  // A mobile appearing or changing is exactly the case that used to need a
+  // manual refresh, so the roster is re-fetched rather than patched: it is one
+  // small request and it cannot drift from the server.
+  if(['phone_created','phone_deleted','phone_updated'].includes(data.event)){
+    try{
+      const users = await req('/_sandbox/phones');
+      state.users = users.data;
+    }catch{ return; }
+    await loadUnread();
+    renderMobiles();
+    renderFeed();
+    if(data.event==='phone_created'){
+      const row = document.querySelector(`.mobile-row[data-open-wa="${CSS.escape(data.wa_id||'')}"]`);
+      if(row) row.classList.add('just-added');
+    }
+    return;
+  }
+  if(data.event==='message' && data.wa_id){
+    // Only messages arriving FROM a business count as something to read; the
+    // echo of what a mobile itself sent is not a notification.
+    const message = data.message || {};
+    const inbound = (message.direction||'') === 'inbound' || !!message.from;
+    if(!inbound) pushFeed(feedEntry(data.wa_id, message));
+    await loadUnread();
+    renderMobiles();
+    return;
+  }
+  if(data.event==='status' || data.event==='read'){
+    await loadUnread();
+    renderMobiles();
+  }
+}
 
 /* ---- live updates ---- */
 function connectSocket(){
