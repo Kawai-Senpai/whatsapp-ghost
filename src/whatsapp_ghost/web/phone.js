@@ -143,6 +143,14 @@ async function loadTemplateDefinitions(){
   }
 }
 
+function isUnknownTemplate(message){
+  if(message.message_type !== 'template') return false;
+  const template=(message.payload || {}).template || {};
+  const name=template.name;
+  const language=template.language?.code || '';
+  return !!name && !state.templates[name+'|'+language] && !state.templates[name];
+}
+
 /* ---- boot ---- */
 async function boot(){
   try{
@@ -287,6 +295,10 @@ async function loadMessages(){
   state.messages = new Map(all.map(message=>[message.id,message]));
   state.hasMore = !!d.has_more;
   state.nextBefore = d.next_before || null;
+  // A template can be seeded while the simulator is already open. Refresh its
+  // definitions before rendering instead of showing the bare template name
+  // until the user manually reloads the entire page.
+  if(all.some(isUnknownTemplate)) await loadTemplateDefinitions();
   await markRead(all);
   renderMessages({scroll:'bottom'});
 }
@@ -767,7 +779,7 @@ function connectSocket(){
       // The per-customer socket sends the Meta wire shape for inbound, which
       // has no direction or timestamps the transcript needs, so those are
       // filled from what the event does carry.
-      appendMessage(message.id ? {
+      const normalized = message.id ? {
         id: message.id,
         direction: data.direction || message.direction || (message.from ? 'inbound' : 'outbound'),
         message_type: message.message_type || message.type,
@@ -776,7 +788,11 @@ function connectSocket(){
         created_at: message.created_at
           || (message.timestamp ? new Date(Number(message.timestamp)*1000).toISOString() : new Date().toISOString()),
         sender_id: message.sender_id, recipient_id: message.recipient_id,
-      } : message);
+      } : message;
+      appendMessage(normalized);
+      if(isUnknownTemplate(normalized)){
+        loadTemplateDefinitions().then(()=>renderMessages({scroll:'bottom'}));
+      }
       // Arriving while the chat is open means it has been seen. loadMessages()
       // used to do this as a side effect of its full reload; appending has to
       // do it explicitly, or the ticks never reach "read" and the badge sticks.
