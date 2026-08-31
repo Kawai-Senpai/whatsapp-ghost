@@ -81,7 +81,7 @@
       <button class="side-link" data-page="guide"><svg class="ico"><use href="#i-guide"/></svg> Integration Guide</button>
       <button class="side-link" data-page="simulator"><svg class="ico"><use href="#i-phone"/></svg> Phone Simulator</button>
 
-      <div class="side-foot"><span class="dot"></span>Runs only on your machine<br><span id="base-small">127.0.0.1:8787</span> · <span id="mode-foot">STRICT</span><br><span class="credit">Created by <a href="https://ranitbhowmick.com" target="_blank" rel="noopener noreferrer">Ranit Bhowmick</a></span></div>
+      <div class="side-foot"><span class="dot"></span>Runs only on your machine<br><span id="base-small">127.0.0.1:8787</span> · <span id="mode-foot">STRICT</span><br><span class="credit"><a href="https://github.com/Kawai-Senpai/whatsapp-ghost" target="_blank" rel="noopener noreferrer">Help us improve</a></span></div>
     </aside>
 
     <!-- Main content -->
@@ -316,6 +316,11 @@
             <div class="actions" style="margin-top:18px">
               <button class="btn wa" onclick="openPhoneTab()"><svg><use href="#i-open"/></svg>Open WhatsApp Web</button>
             </div>
+          </div>
+          <div class="card span12">
+            <h2>Recent messages <span class="live-pill" id="sim-live" title="Disconnected">live</span></h2>
+            <p class="card-sub">Every message across all test customers, newest first. Updates as it happens, no refresh needed.</p>
+            <div class="list list-scroll" id="sim-activity"></div>
           </div>
         </div>
       </section>

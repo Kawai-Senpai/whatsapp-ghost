@@ -204,3 +204,25 @@ def test_per_customer_socket_payload_is_unchanged_by_the_observer(
     assert messages, f"no message event on the per-customer socket: {events}"
     for event in events:
         assert "wa_id" not in event, f"observer tagging leaked into {event}"
+
+
+def test_live_pushed_message_carries_a_parsed_payload(
+    client: TestClient, headers: dict[str, str]
+) -> None:
+    """A socket message must be readable without a second fetch.
+
+    The stored column is payload_json, so dict(row) hands out raw JSON text and
+    no "payload" key. The REST endpoint parses it but the socket did not, and
+    every live-pushed message rendered in the browser as "(no body)".
+    """
+    _open_window(client, "15551230010")
+    with client.websocket_connect("/_sandbox/observer") as socket:
+        _send(client, headers, "15551230010", "readable body")
+        events = [socket.receive_json() for _ in range(3)]
+
+    messages = [e for e in events if e["event"] == "message"]
+    assert messages, f"no message event: {events}"
+    payload = messages[0]["message"]["payload"]
+    assert isinstance(payload, dict), f"payload arrived unparsed: {payload!r}"
+    assert payload["text"]["body"] == "readable body"
+    assert "payload_json" not in messages[0]["message"]

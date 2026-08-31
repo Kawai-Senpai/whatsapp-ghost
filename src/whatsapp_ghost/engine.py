@@ -213,7 +213,7 @@ class Engine:
             await self.set_status(message_id, "failed", 131026)
         else:
             await self.set_status(message_id, "delivered")
-            await self.broadcast(message["recipient_id"], {"event": "message", "message": dict(message)})
+            await self.broadcast(message["recipient_id"], {"event": "message", "message": self.message_row(message)})
 
     async def set_status(self, message_id: str, status: str, failure_code: int | None = None) -> None:
         now = self.store.now()
@@ -320,6 +320,23 @@ class Engine:
                 "UPDATE webhook_attempts SET completed_at=?,error=? WHERE id=?",
                 (self.store.now().isoformat(), str(exc), attempt_id),
             )
+
+    def message_row(self, message: Any) -> dict[str, Any]:
+        """A stored message as clients expect it: payload parsed, not a string.
+
+        The DB column is payload_json, so dict(row) carries the raw JSON text
+        and no "payload" key at all. The REST endpoint parses it; the socket did
+        not, so every live-pushed message reached the browser with an
+        unreadable body and rendered as "(no body)".
+        """
+        row = dict(message)
+        raw = row.pop("payload_json", None)
+        if raw is not None:
+            try:
+                row["payload"] = json.loads(raw)
+            except (TypeError, ValueError):
+                row["payload"] = {}
+        return row
 
     async def broadcast(self, wa_id: str, payload: dict[str, Any]) -> None:
         dead = []

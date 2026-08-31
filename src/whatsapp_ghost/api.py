@@ -264,7 +264,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             " WHERE m.direction='outbound' AND m.status IN ('accepted','sent','delivered')"
             " GROUP BY c.user_wa_id, c.phone_number_id"
         )
-        return {"data": rows(result)}
+        activity = store.all(
+            "SELECT c.user_wa_id AS wa_id, c.phone_number_id AS phone_number_id,"
+            " MAX(m.created_at) AS last_at, COUNT(*) AS total"
+            " FROM messages m JOIN conversations c ON c.id=m.conversation_id"
+            " GROUP BY c.user_wa_id, c.phone_number_id"
+        )
+        # Activity covers read messages too, so the chat list can order by most
+        # recent regardless of whether anything is still unread.
+        return {"data": rows(result), "activity": rows(activity)}
 
     @app.post("/_sandbox/phones", status_code=201)
     def sandbox_phone_create(body: dict[str, Any] = Body(...)):

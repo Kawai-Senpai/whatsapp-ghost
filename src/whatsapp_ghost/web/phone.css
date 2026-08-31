@@ -10,19 +10,19 @@
 html,body{height:100%;margin:0;overflow:hidden}
 body{
   font:15px/1.4 -apple-system,"Segoe UI",Helvetica,Arial,sans-serif;color:var(--ink);
-  background:#d9dbd4;
-  background-image:linear-gradient(0deg,#d9dbd4 0,#d9dbd4 130px,#00a884 130px,#00a884 100%);
-  display:flex;align-items:center;justify-content:center;
+  background:var(--panel);
+  display:flex;align-items:stretch;justify-content:flex-start;
 }
 button{cursor:pointer;font:inherit;color:inherit;border:0;background:none}
 
 /* app frame — WhatsApp Web is a centered white app on a green bar */
+/* Full-bleed: the app fills the window beside the inbox rather than sitting as
+   a centered card, which wasted a band of green above and below. */
 .app{
-  width:min(1600px,100%);height:min(96vh,100% - 38px);margin:19px auto;min-width:0;flex:1;
+  width:auto;height:100%;margin:0;min-width:0;flex:1;
   display:grid;grid-template-columns:minmax(300px,30%) 1fr;min-height:0;overflow:hidden;
-  background:var(--panel);box-shadow:0 6px 18px rgba(11,20,26,.25);
+  background:var(--panel);
 }
-@media(max-width:1600px){.app{margin:0;height:100vh}}
 
 /* ===== left pane ===== */
 .pane{display:flex;flex-direction:column;min-height:0;overflow:hidden;border-right:1px solid var(--line);min-width:0;background:var(--panel)}
@@ -123,6 +123,7 @@ button{cursor:pointer;font:inherit;color:inherit;border:0;background:none}
 .inbox{
   width:330px;flex:0 0 330px;align-self:stretch;display:flex;flex-direction:column;
   min-height:0;background:#0b141a;color:#e9edef;font-size:13px;
+  border-right:1px solid #2a3942;
 }
 .inbox.collapsed{width:44px;flex-basis:44px}
 .inbox.collapsed .mobiles,.inbox.collapsed .feed,.inbox.collapsed .inbox-head b,
@@ -175,3 +176,11 @@ button{cursor:pointer;font:inherit;color:inherit;border:0;background:none}
   .inbox:not(.collapsed) .mobiles,.inbox:not(.collapsed) .feed,
   .inbox:not(.collapsed) .inbox-head b,.inbox:not(.collapsed) .inbox-clear,
   .inbox:not(.collapsed) .inbox-dot{display:revert}}
+
+/* unread badge + ordering affordances in the business chat list */
+.chat-row .c-bottom{display:flex;align-items:center;gap:8px}
+.chat-row .c-bottom .c-preview{flex:1;min-width:0}
+.c-unread{background:var(--unread);color:#fff;border-radius:11px;min-width:20px;height:20px;
+  padding:0 6px;display:grid;place-items:center;font-size:12px;font-weight:600;flex:0 0 auto}
+.chat-row.has-unread .c-name{font-weight:700}
+.chat-row.has-unread .c-time{color:var(--unread);font-weight:600}

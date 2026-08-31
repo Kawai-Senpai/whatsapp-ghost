@@ -362,3 +362,19 @@ textarea.field{min-height:88px;resize:vertical}
   font-size:12.5px;color:#6b4e00;display:flex;align-items:center;gap:10px;flex-wrap:wrap
 }
 .unrouted-note .btn{margin-left:auto}
+
+/* ===== live simulator activity ===== */
+.live-pill{font-size:10px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;
+  padding:2px 7px;border-radius:10px;background:#e6e9ec;color:#8a9199;vertical-align:middle;margin-left:6px}
+.live-pill.on{background:#d8f5e3;color:#0a7d3f}
+.unread-pill{background:#25D366;color:#fff;border-radius:11px;min-width:22px;height:22px;
+  padding:0 7px;display:inline-grid;place-items:center;font-size:12px;font-weight:700}
+.sim-act{padding:10px 12px}
+.sim-act-row{display:flex;align-items:center;gap:10px}
+.sim-act-row .grow{min-width:0}
+.sim-act-row b{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sim-act-row small{color:var(--muted)}
+.sim-act-time{color:var(--muted);flex:0 0 auto}
+.sim-act-body{margin-top:6px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sim-act.inbound{border-left:3px solid #25D366}
+.sim-act.outbound{border-left:3px solid var(--fb-blue,#1877f2)}

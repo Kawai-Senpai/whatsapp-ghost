@@ -112,9 +112,6 @@ def test_console_can_add_second_sender_and_populates_live_guide(page: Page, live
 def test_console_displays_actionable_meta_error_details(page: Page, live_server: tuple[str, Path]) -> None:
     base_url, _ = live_server
     page.goto(base_url + "/console")
-    credit = page.locator('.side-foot a[href="https://ranitbhowmick.com"]')
-    expect(credit).to_have_text("Ranit Bhowmick")
-    expect(credit).to_have_attribute("rel", "noopener noreferrer")
     page.locator('.side-link[data-page="templates"]').click()
     page.get_by_role("button", name="New template").click()
     page.locator("#tpl-name").fill("Invalid-Template")
@@ -343,3 +340,117 @@ def test_phone_can_switch_between_senders_without_mixing_history(page: Page, liv
     page.get_by_text("Ghost Demo", exact=True).click()
     expect(page.locator("#messages")).to_contain_text("First browser message")
     expect(page.locator("#messages")).not_to_contain_text("Sales-only conversation")
+
+
+def _seed_conversation(base_url: str, wa_id: str, name: str, body: str) -> None:
+    """Register a customer, open the service window, then have the business reply."""
+    httpx.post(f"{base_url}/_sandbox/phones", json={"wa_id": wa_id, "display_name": name}, timeout=5)
+    httpx.post(
+        f"{base_url}/_sandbox/phones/{wa_id}/messages",
+        json={"phone_number_id": "PHONE_LOCAL", "type": "text", "text": "hi"},
+        timeout=5,
+    )
+    httpx.post(
+        f"{base_url}/v25.0/PHONE_LOCAL/messages",
+        headers={"Authorization": "Bearer browser-token"},
+        json={"messaging_product": "whatsapp", "to": wa_id, "type": "text", "text": {"body": body}},
+        timeout=5,
+    )
+
+
+def test_phone_live_inbox_shows_another_mobiles_message_without_a_reload(
+    page: Page, live_server: tuple[str, Path]
+) -> None:
+    """The complaint this feature exists for: no manual refresh.
+
+    The page is opened as one customer and never reloaded; a message is then
+    sent to a *different* customer. Before /_sandbox/observer the page held only
+    /_sandbox/clients/{wa} and could not learn about this at all.
+    """
+    base_url, _ = live_server
+    _seed_conversation(base_url, "15550007001", "Watcher", "seed")
+    page.goto(f"{base_url}/phone?phone=15550007001&business=PHONE_LOCAL")
+    expect(page.locator("#inbox-status")).to_have_class(re.compile(r"live"))
+
+    _seed_conversation(base_url, "15550007002", "Other Mobile", "arrived while you watched")
+
+    feed = page.locator("#feed")
+    expect(feed).to_contain_text("Other Mobile")
+    # The body must be readable: the socket payload is stored as JSON text, and
+    # an unparsed one renders as "(no body)".
+    expect(feed).to_contain_text("arrived while you watched")
+    expect(feed).not_to_contain_text("(no body)")
+
+    # And the other mobile carries an unread badge without any interaction.
+    row = page.locator('.mobile-row[data-open-wa="15550007002"]')
+    expect(row.locator(".badge-unread")).to_have_text("1")
+
+
+def test_phone_live_inbox_shows_an_auto_created_mobile_without_a_reload(
+    page: Page, live_server: tuple[str, Path]
+) -> None:
+    base_url, _ = live_server
+    _seed_conversation(base_url, "15550007010", "Roster Watcher", "seed")
+    page.goto(f"{base_url}/phone?phone=15550007010&business=PHONE_LOCAL")
+    expect(page.locator("#inbox-status")).to_have_class(re.compile(r"live"))
+
+    # An outbound send to an unknown number auto-creates the mobile server-side.
+    httpx.post(
+        f"{base_url}/v25.0/PHONE_LOCAL/messages",
+        headers={"Authorization": "Bearer browser-token"},
+        json={
+            "messaging_product": "whatsapp",
+            "to": "15550007011",
+            "type": "template",
+            "template": {
+                "name": "hello_world",
+                "language": {"code": "en_US"},
+                "components": [{"type": "body", "parameters": [{"type": "text", "text": "Newcomer"}]}],
+            },
+        },
+        timeout=5,
+    )
+    expect(page.locator('.mobile-row[data-open-wa="15550007011"]')).to_be_visible()
+
+
+def test_console_simulator_activity_and_unread_are_live(
+    page: Page, live_server: tuple[str, Path]
+) -> None:
+    """The console must not need a refresh either."""
+    base_url, _ = live_server
+    page.goto(base_url + "/console")
+    page.locator('.side-link[data-page="simulator"]').click()
+    expect(page.locator("#sim-live")).to_have_class(re.compile(r"on"))
+
+    _seed_conversation(base_url, "15550007020", "Console Watcher", "console live body")
+
+    activity = page.locator("#sim-activity")
+    expect(activity).to_contain_text("Console Watcher")
+    expect(activity).to_contain_text("console live body")
+    expect(page.locator("#user-list")).to_contain_text("Console Watcher")
+
+
+def test_console_can_delete_a_template(page: Page, live_server: tuple[str, Path]) -> None:
+    """Deleting was already in the API but had no control in the UI."""
+    base_url, _ = live_server
+    page.goto(base_url + "/console")
+    page.on("dialog", lambda dialog: dialog.accept())
+    page.locator('.side-link[data-page="templates"]').click()
+    rows = page.locator("#template-list .item")
+    expect(rows.first).to_be_visible()
+    # Other tests in this module share the live server and may have added
+    # templates, so assert one fewer rather than an empty list.
+    before = rows.count()
+    page.locator("#template-list").get_by_role("button", name="Delete").first.click()
+    expect(rows).to_have_count(before - 1)
+
+
+def test_console_returns_to_the_page_you_were_on_after_a_reload(
+    page: Page, live_server: tuple[str, Path]
+) -> None:
+    base_url, _ = live_server
+    page.goto(base_url + "/console")
+    page.locator('.side-link[data-page="webhooks"]').click()
+    expect(page.locator("#webhooks")).to_have_class(re.compile(r"active"))
+    page.reload()
+    expect(page.locator("#webhooks")).to_have_class(re.compile(r"active"))

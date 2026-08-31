@@ -9,6 +9,8 @@ const state = {
   observer:null, observerRetry:null,   // firehose socket: every mobile, not just ours
   feed:[],                              // newest-first arrivals shown in the live inbox
   unread:new Map(),                     // wa_id -> unread count, derived from message status
+  chatUnread:new Map(),                 // wa_id|phone_number_id -> {unread, at}
+  chatActivity:new Map(),               // phone_number_id -> last message time, for ordering
 };
 const FEED_LIMIT = 60;
 const $ = s => document.querySelector(s);
@@ -149,7 +151,7 @@ async function boot(){
     await loadTemplateDefinitions();
     if(!state.wa && state.users.length) state.wa = state.users[0].wa_id;
     const me = state.users.find(u=>u.wa_id===state.wa);
-    $('#me-avatar').textContent = initials(me?.display_name || state.wa || 'Y');
+    applyMeAvatar(me);
     document.title = 'WhatsApp' + (me? ' · '+me.display_name : '');
 
     await loadPins();
@@ -161,9 +163,20 @@ async function boot(){
     connectSocket();
     await loadUnread();
     renderMobiles();
+    renderChatList();
     renderFeed();
     connectObserver();
   }catch(e){ alert(e.message); }
+}
+
+/* The simulated customer carries a colour, chosen in the console and shown on
+   their row in the live inbox. Using it here too means the avatar in this tab
+   matches the one you clicked to get here, instead of a generic grey. */
+function applyMeAvatar(me){
+  const avatar = $('#me-avatar');
+  if(!avatar) return;
+  avatar.textContent = initials(me?.display_name || state.wa || 'Y');
+  if(me?.color){ avatar.style.background = me.color; avatar.style.color = '#fff'; }
 }
 
 function businessPhones(){
@@ -172,18 +185,35 @@ function businessPhones(){
   return out;
 }
 
+function chatKey(phoneId){ return state.wa+'|'+phoneId; }
+function chatUnread(phoneId){ return state.chatUnread.get(chatKey(phoneId))?.unread || 0; }
+function chatLastAt(phoneId){
+  const at = state.chatActivity.get(chatKey(phoneId));
+  return at ? new Date(at).getTime() : 0;
+}
+
 function renderChatList(){
   const q = ($('#search').value||'').toLowerCase();
+  // Pinned first, then most recently active, the way a real client orders
+  // chats. Before this the order was whatever businessPhones() happened to
+  // return, so a chat that just received something did not move.
   const flat = businessPhones().filter(p=>!q || p.verified_name.toLowerCase().includes(q) || p.display_phone_number.includes(q))
-    .sort((a,b)=>Number(state.pinned.has(b.id))-Number(state.pinned.has(a.id)));
-  $('#chat-list').innerHTML = flat.map(p=>`
-    <div class="chat-row ${p.id===state.activePhone?'active':''}" onclick="openChat('${esc(p.id)}')">
+    .sort((a,b)=>
+      Number(state.pinned.has(b.id))-Number(state.pinned.has(a.id))
+      || chatLastAt(b.id)-chatLastAt(a.id)
+      || a.verified_name.localeCompare(b.verified_name));
+  $('#chat-list').innerHTML = flat.map(p=>{
+    const count = chatUnread(p.id);
+    const at = chatLastAt(p.id);
+    return `
+    <div class="chat-row ${p.id===state.activePhone?'active':''} ${count?'has-unread':''}" onclick="openChat('${esc(p.id)}')">
       <div class="c-avatar">${esc(initials(p.verified_name))}</div>
       <div class="c-main">
-        <div class="c-top"><span class="c-name">${esc(p.verified_name)}</span><span class="c-row-meta">${state.pinned.has(p.id)?'<span class="c-pin" title="Pinned">📌</span>':''}<span class="c-time" id="ct-${esc(p.id)}"></span></span></div>
-        <div class="c-preview" id="cp-${esc(p.id)}">+${esc(p.display_phone_number)}</div>
+        <div class="c-top"><span class="c-name">${esc(p.verified_name)}</span><span class="c-row-meta">${state.pinned.has(p.id)?'<span class="c-pin" title="Pinned">📌</span>':''}<span class="c-time" id="ct-${esc(p.id)}">${at?esc(fmtTime(at)):''}</span></span></div>
+        <div class="c-bottom"><div class="c-preview" id="cp-${esc(p.id)}">+${esc(p.display_phone_number)}</div>${count?`<span class="c-unread">${count>99?'99+':count}</span>`:''}</div>
       </div>
-    </div>`).join('') || '<div style="padding:24px;color:var(--muted);text-align:center">No business numbers yet.<br>Add one in the console.</div>';
+    </div>`;
+  }).join('') || '<div style="padding:24px;color:var(--muted);text-align:center">No business numbers yet.<br>Add one in the console.</div>';
 }
 
 async function loadPins(){
@@ -244,7 +274,7 @@ async function loadMessages(){
       // Reading is what clears the badge, so refresh it here rather than
       // waiting for an observer event: the read POST does not broadcast to
       // this page's own wa_id.
-      await loadUnread(); renderMobiles();
+      await loadUnread(); renderMobiles(); renderChatList();
     }finally{ state.reading=false; }
   }
   const box = $('#messages');
@@ -410,9 +440,18 @@ async function loadUnread(){
   // on a cold load and cannot drift from the read receipts the sandbox sends.
   try{
     const d = await req('/_sandbox/unread');
-    const totals = new Map();
-    for(const row of (d.data||[])) totals.set(row.wa_id, (totals.get(row.wa_id)||0) + row.unread);
+    const totals = new Map(), perChat = new Map();
+    for(const row of (d.data||[])){
+      totals.set(row.wa_id, (totals.get(row.wa_id)||0) + row.unread);
+      // Keyed by mobile+business so the chat list can badge and sort each
+      // conversation, not just the mobile as a whole.
+      perChat.set(row.wa_id+'|'+row.phone_number_id, {unread:row.unread, at:row.last_at});
+    }
     state.unread = totals;
+    state.chatUnread = perChat;
+    const activity = new Map();
+    for(const row of (d.activity||[])) activity.set(row.wa_id+'|'+row.phone_number_id, row.last_at);
+    state.chatActivity = activity;
   }catch{ /* leave the previous counts rather than blanking every badge */ }
 }
 
@@ -557,6 +596,7 @@ async function handleObserverEvent(data){
     }catch{ return; }
     await loadUnread();
     renderMobiles();
+    renderChatList();
     renderFeed();
     if(data.event==='phone_created'){
       const row = document.querySelector(`.mobile-row[data-open-wa="${CSS.escape(data.wa_id||'')}"]`);
@@ -572,11 +612,13 @@ async function handleObserverEvent(data){
     if(!inbound) pushFeed(feedEntry(data.wa_id, message));
     await loadUnread();
     renderMobiles();
+    renderChatList();
     return;
   }
   if(data.event==='status' || data.event==='read'){
     await loadUnread();
     renderMobiles();
+    renderChatList();
   }
 }
 
@@ -600,7 +642,7 @@ async function refreshMeta(){
     const [biz,users] = await Promise.all([req('/_sandbox/businesses'), req('/_sandbox/phones')]);
     state.businesses = biz.data; state.users = users.data;
     const me = state.users.find(u=>u.wa_id===state.wa);
-    $('#me-avatar').textContent = initials(me?.display_name || state.wa || 'Y');
+    applyMeAvatar(me);
     renderChatList();
     if(state.activePhone){
       const p = businessPhones().find(x=>x.id===state.activePhone);

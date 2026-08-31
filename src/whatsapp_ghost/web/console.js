@@ -1,5 +1,7 @@
 /* ===== WhatsApp Ghost developer console ===== */
-const state = { config:{}, apps:[], businesses:[], users:[], messages:[], webhooks:[], subscriptions:[], templates:[], hookPage:1 };
+const state = { config:{}, apps:[], businesses:[], users:[], messages:[], webhooks:[], subscriptions:[], templates:[], hookPage:1,
+  unread:new Map(), activity:[], observer:null, observerRetry:null };
+const SIM_FEED_LIMIT = 40;
 let guideLanguage = 'curl';
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -38,6 +40,10 @@ function jsonHtml(value){
 
 /* ---- navigation ---- */
 function goto(page){
+  state.page = page;
+  // Remembered so a reload returns to the page you were on rather than
+  // dropping you back on the dashboard.
+  try{ localStorage.setItem('ghost.console.page', page); }catch{}
   document.querySelectorAll('.side-link').forEach(b=>b.classList.toggle('active', b.dataset.page===page));
   document.querySelectorAll('.page').forEach(p=>p.classList.toggle('active', p.id===page));
   window.scrollTo(0,0);
@@ -45,6 +51,7 @@ function goto(page){
   if(page==='webhooks') loadWebhooks();
   if(page==='templates') loadTemplates();
   if(page==='guide') renderGuide();
+  if(page==='simulator') loadSimActivity();
 }
 document.querySelectorAll('[data-page]').forEach(b=>b.addEventListener('click',e=>{ e.preventDefault(); goto(b.dataset.page); }));
 
@@ -63,20 +70,28 @@ async function loadAll(){
     if($('#avatar-mode')) $('#avatar-mode').textContent = state.config.base_url.replace(/^https?:\/\//,'') + ' · ' + state.config.mode;
     $('#mode-foot').textContent = state.config.mode.toUpperCase();
     $('#endpoint').textContent = state.config.base_url + '/v25.0/PHONE_LOCAL/messages';
-    $('#m-apps').textContent = state.apps.length;
-    $('#m-numbers').textContent = numbers;
-    $('#m-users').textContent = state.users.length;
-    $('#m-messages').textContent = state.messages.length;
-
-    setTask('task-number', numbers>0); setTask('s-number', numbers>0);
-    setTask('task-user', state.users.length>0); setTask('s-user', state.users.length>0);
-    setTask('task-msg', state.messages.length>0); setTask('s-msg', state.messages.length>0);
+    renderMetrics();
 
     renderApps(); renderBusinesses(); renderUsers(); fillSelectors();
     await loadTemplates(); await loadWebhooks();
     renderCredentials();
   }catch(e){ toast(e.message,true); }
 }
+/* Dashboard counters and the get-started checklist, recomputed from state.
+   Split out of loadAll so a live event can refresh them without re-fetching
+   every collection in the console. */
+function renderMetrics(){
+  const numbers = state.businesses.reduce((n,b)=>n+b.phone_numbers.length,0);
+  if($('#m-apps')) $('#m-apps').textContent = state.apps.length;
+  if($('#m-numbers')) $('#m-numbers').textContent = numbers;
+  if($('#m-users')) $('#m-users').textContent = state.users.length;
+  if($('#m-messages')) $('#m-messages').textContent = state.messages.length;
+
+  setTask('task-number', numbers>0); setTask('s-number', numbers>0);
+  setTask('task-user', state.users.length>0); setTask('s-user', state.users.length>0);
+  setTask('task-msg', state.messages.length>0); setTask('s-msg', state.messages.length>0);
+}
+
 function setTask(id, done){ const el=$('#'+id); if(el) el.classList.toggle('done', done); const c=el?.querySelector('.check'); if(c) c.textContent=done?'✓':''; }
 
 /* ---- render: apps ---- */
@@ -132,7 +147,10 @@ function userMatches(u, q){
 function renderUsers(){
   const q = (state.userFilter || '').trim().toLowerCase();
   const all = state.users;
-  const shown = all.filter(u => userMatches(u, q));
+  // Unread first: whoever is waiting on a reply should never be scrolled to.
+  const shown = all.filter(u => userMatches(u, q))
+    .sort((a,b)=> unreadFor(b.wa_id)-unreadFor(a.wa_id)
+      || String(a.display_name||'').localeCompare(String(b.display_name||'')));
   const counter = $('#user-count');
   if(counter) counter.textContent = q ? `${shown.length} of ${all.length}` : `${all.length}`;
   const filterWrap = $('#user-filter-wrap');
@@ -158,6 +176,7 @@ function renderUsers(){
         <small title="+${esc(u.wa_id)}">+${esc(u.wa_id)}</small>
       </div>
       <div class="user-actions">
+        ${unreadFor(u.wa_id)?`<span class="unread-pill" title="${unreadFor(u.wa_id)} unread">${unreadFor(u.wa_id)>99?'99+':unreadFor(u.wa_id)}</span>`:''}
         <button class="btn wa small" onclick="openPhoneTabFor('${esc(u.wa_id)}')"><svg><use href="#i-open"/></svg>Open</button>
         <button class="btn secondary small icon-only" title="Rename or recolor ${name}" aria-label="Rename or recolor ${name}" onclick="editPhone('${esc(u.wa_id)}')"><svg><use href="#i-edit"/></svg></button>
         <button class="btn danger small icon-only" title="Delete ${name}" aria-label="Delete ${name}" onclick="deletePhone('${esc(u.wa_id)}','${name}')"><svg><use href="#i-trash"/></svg></button>
@@ -211,16 +230,31 @@ async function loadTemplates(){
   if(!state.config.access_token) return;
   let all=[];
   for(const b of state.businesses){
-    try{ const d=await req(`/v25.0/${b.id}/message_templates`,{headers:{Authorization:'Bearer '+state.config.access_token}}); all.push(...d.data.map(t=>({...t,_waba:b.name}))); }catch{}
+    // _wabaId is kept alongside the display name because deleting a template
+    // is scoped to its business account: name alone is not unique across WABAs.
+    try{ const d=await req(`/v25.0/${b.id}/message_templates`,{headers:{Authorization:'Bearer '+state.config.access_token}}); all.push(...d.data.map(t=>({...t,_waba:b.name,_wabaId:b.id}))); }catch{}
   }
   state.templates=all;
   $('#template-list').innerHTML = all.map(t=>`
     <div class="item"><div class="item-head">
       <div class="avatar"><svg class="ico" style="color:var(--fb-blue)"><use href="#i-template"/></svg></div>
       <div class="grow"><b>${esc(t.name)} <span class="badge">${esc(t.status)}</span></b>
-        <small>${esc(t.language)} · ${esc(t.category)} · ${esc(t._waba)}</small></div></div>
+        <small>${esc(t.language)} · ${esc(t.category)} · ${esc(t._waba)}</small></div>
+      <button class="btn danger small" onclick='deleteTemplate(${JSON.stringify(t._wabaId)},${JSON.stringify(t.name)})'>Delete</button></div>
       <div style="margin-top:10px;color:var(--muted)">${esc(t.components?.find(c=>c.type==='BODY')?.text||'')}</div>
     </div>`).join('') || '<div class="empty">No templates yet.</div>';
+}
+
+async function deleteTemplate(wabaId,name){
+  if(!confirm(`Delete template "${name}"?
+
+Messages already sent with it keep their stored payload, but new sends naming it will fail.`)) return;
+  try{
+    await req(`/v25.0/${encodeURIComponent(wabaId)}/message_templates?name=${encodeURIComponent(name)}`,
+      {method:'DELETE',headers:{Authorization:'Bearer '+state.config.access_token}});
+    toast('Template deleted');
+    await loadTemplates();
+  }catch(x){ toast(x.message,true); }
 }
 async function loadWebhooks(){
   const [events,subscriptions] = await Promise.all([req('/_sandbox/webhooks'),req('/_sandbox/webhook-subscriptions')]);
@@ -483,7 +517,13 @@ function openPhoneForBusiness(phoneId){
 document.querySelectorAll('.modal-back').forEach(m=>m.addEventListener('click',e=>{ if(e.target===m) m.classList.remove('open'); }));
 if(location.pathname==='/guide') goto('guide');
 else if(location.hash==='#simulator') goto('simulator');
-loadAll().then(()=>gsWarmIndex());
+try{
+  const remembered = localStorage.getItem('ghost.console.page');
+  if(remembered && document.getElementById(remembered)) goto(remembered);
+}catch{ /* private mode: start on the default page */ }
+loadAll().then(()=>gsWarmIndex())
+  .then(loadSimUnread).then(renderUsers)
+  .then(loadSimActivity).then(connectConsoleObserver);
 
 /* ---- credentials ---- */
 const CRED_FORMATS = ['.env', 'curl', 'Python', 'Node', 'JSON'];
@@ -846,3 +886,160 @@ document.addEventListener('keydown', e=>{ if(e.key === 'Escape') avatarOpen(fals
 
 function copyBaseUrl(){ copyText(state.config.base_url || location.origin); }
 function reloadConsole(){ loadAll().then(()=>gsWarmIndex()); toast('Reloading sandbox data'); }
+
+/* ===== live console =====
+   Everything below exists so the console never needs a manual refresh. It
+   listens on /_sandbox/observer, the same firehose the phone page uses, which
+   carries every sandbox event tagged with the wa_id it belongs to. */
+
+function unreadFor(wa){ return state.unread.get(wa) || 0; }
+
+async function loadSimUnread(){
+  // Derived from message status server-side, so it is correct on a cold load
+  // and cannot drift from the read receipts the sandbox reports to webhooks.
+  try{
+    const d = await req('/_sandbox/unread');
+    const totals = new Map();
+    for(const row of (d.data||[])) totals.set(row.wa_id, (totals.get(row.wa_id)||0) + row.unread);
+    state.unread = totals;
+  }catch{ /* keep the previous counts rather than blanking every badge */ }
+}
+
+function simMobileName(wa){
+  const u = (state.users||[]).find(x => x.wa_id === wa);
+  return u ? (u.display_name || wa) : wa;
+}
+function simBusinessName(phoneId){
+  for(const b of (state.businesses||[])){
+    const match = (b.phone_numbers||[]).find(p => p.id === phoneId);
+    if(match) return match.verified_name;
+  }
+  return phoneId || 'Business';
+}
+
+/* Summarise one stored message row for the activity list. */
+function simSummary(message){
+  const type = message.message_type || message.type || 'text';
+  const payload = message.payload || message;
+  if(type === 'text'){
+    const text = payload.text;
+    return typeof text === 'string' ? text : (text?.body || payload.body || '');
+  }
+  if(type === 'template') return (payload.template?.name || payload.name || 'template');
+  if(type === 'button') return payload.button?.text || payload.button?.payload || 'Button reply';
+  if(type === 'reaction') return payload.reaction?.emoji || 'Reaction';
+  return '[' + type + ']';
+}
+
+function pushSimActivity(entry){
+  state.activity.unshift(entry);
+  if(state.activity.length > SIM_FEED_LIMIT) state.activity.length = SIM_FEED_LIMIT;
+  renderSimActivity();
+}
+
+function renderSimActivity(){
+  const box = $('#sim-activity');
+  if(!box) return;
+  if(!state.activity.length){
+    box.innerHTML = '<div class="empty">Nothing yet. Any message to or from a test customer appears here as it happens.</div>';
+    return;
+  }
+  box.innerHTML = state.activity.map(item=>`
+    <div class="item sim-act ${item.inbound?'inbound':'outbound'}">
+      <div class="sim-act-row">
+        <span class="badge ${item.inbound?'':'gray'}">${item.inbound?'FROM CUSTOMER':'TO CUSTOMER'}</span>
+        <div class="grow">
+          <b>${esc(simMobileName(item.wa))}</b>
+          <small>${item.inbound?'&#8594;':'&#8592;'} ${esc(simBusinessName(item.phoneId))} · ${esc(item.type)}</small>
+        </div>
+        <small class="sim-act-time">${esc(new Date(item.at).toLocaleTimeString())}</small>
+      </div>
+      <div class="sim-act-body">${esc(item.text || '(no body)')}</div>
+    </div>`).join('');
+}
+
+/* Seed the list on first open so it is not empty before anything new arrives. */
+async function loadSimActivity(){
+  try{
+    const d = await req('/_sandbox/messages?limit=' + SIM_FEED_LIMIT);
+    state.activity = (d.data||[]).map(m=>({
+      wa: m.direction === 'inbound' ? m.sender_id : m.recipient_id,
+      phoneId: m.direction === 'inbound' ? m.recipient_id : m.sender_id,
+      inbound: m.direction === 'inbound',
+      type: m.message_type,
+      text: simSummary(m),
+      at: m.created_at,
+    }));
+  }catch{ state.activity = []; }
+  renderSimActivity();
+}
+
+function simLive(live){
+  const pill = $('#sim-live');
+  if(!pill) return;
+  pill.classList.toggle('on', !!live);
+  pill.title = live ? 'Live' : 'Reconnecting';
+}
+
+function connectConsoleObserver(){
+  if(state.observer){ state.observer.onclose = null; state.observer.close(); }
+  if(state.observerRetry) clearTimeout(state.observerRetry);
+  const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
+  state.observer = new WebSocket(`${scheme}://${location.host}/_sandbox/observer`);
+  state.observer.onopen = ()=>simLive(true);
+  state.observer.onmessage = async event=>{
+    let data; try{ data = JSON.parse(event.data); }catch{ return; }
+    await handleConsoleEvent(data);
+  };
+  state.observer.onclose = ()=>{
+    simLive(false);
+    state.observerRetry = setTimeout(connectConsoleObserver, 1500);
+  };
+}
+
+async function handleConsoleEvent(data){
+  // A customer appearing is exactly what used to need a reload, so the roster
+  // is re-fetched rather than patched: one small request that cannot drift.
+  if(['phone_created','phone_deleted','phone_updated'].includes(data.event)){
+    try{
+      const [users, biz] = await Promise.all([req('/_sandbox/phones'), req('/_sandbox/businesses')]);
+      state.users = users.data;
+      state.businesses = biz.data;
+    }catch{ return; }
+    await loadSimUnread();
+    renderUsers();
+    renderBusinesses();
+    renderSimActivity();
+    renderMetrics();
+    fillSelectors();
+    // Credentials embeds the sender and WABA ids, so it goes stale too.
+    if(state.page === 'credentials') renderCredentials();
+    return;
+  }
+  if(data.event === 'message' && data.wa_id){
+    const message = data.message || {};
+    const inbound = (message.direction||'') === 'inbound' || !!message.from;
+    pushSimActivity({
+      wa: data.wa_id,
+      phoneId: message.phone_number_id || (inbound ? message.recipient_id : message.sender_id) || '',
+      inbound,
+      type: message.message_type || message.type || 'text',
+      text: simSummary(message),
+      at: message.created_at || Date.now(),
+    });
+    // The dashboard message counter and the "Send a message" checklist item
+    // both read state.messages, so it has to grow as messages arrive.
+    state.messages.unshift(message);
+    await loadSimUnread();
+    renderUsers();
+    renderMetrics();
+    // A webhook is queued for every message, so the history is now stale.
+    if(state.page === 'webhooks') loadWebhooks();
+    return;
+  }
+  if(data.event === 'status' || data.event === 'read'){
+    await loadSimUnread();
+    renderUsers();
+    if(state.page === 'webhooks') loadWebhooks();
+  }
+}
