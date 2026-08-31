@@ -752,3 +752,98 @@ def test_console_recent_messages_paginate_and_survive_a_live_arrival(
     expect(page.locator("#sim-activity")).to_contain_text("arrived after paging")
     # The loaded pages survive: the list grows by one rather than snapping back.
     expect(page.locator(".sim-act")).to_have_count(grown + 1)
+
+
+def test_slow_loads_show_placeholders_rather_than_an_empty_pane(
+    page: Page, live_server: tuple[str, Path]
+) -> None:
+    """A pending fetch must look like work, not like a broken page.
+
+    The server here is fast, so the fetch is stalled deliberately: the point is
+    what the pane contains WHILE a load is in flight, which is exactly the
+    state a fast local server hides.
+    """
+    base_url, _ = live_server
+    wa = "15550008800"
+    _seed_conversation(base_url, wa, "Slow Load", "seed")
+    page.goto(f"{base_url}/phone?phone={wa}&business=PHONE_LOCAL")
+    expect(page.locator(".msg").first).to_be_visible()
+
+    during = page.evaluate(
+        """() => {
+            const box = document.querySelector('#messages');
+            const real = window.fetch;
+            window.fetch = () => new Promise(() => {});   // never resolves
+            loadMessages();
+            const seen = {
+                skeletons: box.querySelectorAll('.skeleton').length,
+                msgs: box.querySelectorAll('.msg').length,
+            };
+            window.fetch = real;
+            return seen;
+        }"""
+    )
+    assert during["skeletons"] > 0, "no placeholder shown during a pending load"
+    assert during["msgs"] == 0, "stale messages left on screen during a load"
+
+
+def test_load_earlier_button_reports_that_it_is_working(
+    page: Page, live_server: tuple[str, Path]
+) -> None:
+    """A button that looks idle while fetching invites a second click."""
+    base_url, _ = live_server
+    wa = "15550008900"
+    _seed_conversation(base_url, wa, "Busy Button", "seed")
+    for index in range(60):
+        httpx.post(
+            f"{base_url}/_sandbox/phones/{wa}/messages",
+            json={"phone_number_id": "PHONE_LOCAL", "type": "text", "text": f"bulk {index}"},
+            timeout=5,
+        )
+    page.goto(f"{base_url}/phone?phone={wa}&business=PHONE_LOCAL")
+    expect(page.locator("#load-earlier")).to_be_visible()
+
+    during = page.evaluate(
+        """() => {
+            const real = window.fetch;
+            window.fetch = () => new Promise(() => {});
+            loadEarlier();
+            const button = document.querySelector('#load-earlier');
+            const seen = {label: button.textContent.trim(), disabled: button.disabled};
+            window.fetch = real;
+            return seen;
+        }"""
+    )
+    assert during["disabled"] is True, "button stayed clickable while fetching"
+    assert during["label"] != "Load earlier messages", during["label"]
+
+
+def test_console_lists_show_placeholders_before_their_data_arrives(
+    page: Page, live_server: tuple[str, Path]
+) -> None:
+    """Every console list started empty and stayed empty until its fetch landed."""
+    base_url, _ = live_server
+    page.goto(base_url + "/console")
+    # A list with nothing to fetch resolves synchronously and correctly shows
+    # its empty state instead, so assert only where a request is really made.
+    page.wait_for_function("() => state.businesses && state.businesses.length > 0")
+    for target, selector in (("webhooks", "#webhook-list"), ("templates", "#template-list")):
+        # The fetch is stalled so the pending state is observable at all: against
+        # a local server it otherwise resolves before this evaluate returns.
+        count = page.evaluate(
+            """([target, selector]) => {
+                document.querySelector(selector).innerHTML = '';
+                const real = window.fetch;
+                window.fetch = () => new Promise(() => {});
+                // try/finally so a throw cannot leave fetch stubbed for the
+                // rest of the session, which would break later tests.
+                try {
+                    goto(target);
+                    return document.querySelectorAll(selector + ' .skeleton').length;
+                } finally {
+                    window.fetch = real;
+                }
+            }""",
+            [target, selector],
+        )
+        assert count > 0, f"{target} showed nothing while loading"

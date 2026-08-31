@@ -295,8 +295,18 @@ async function loadMessages(){
    to a load rather than to rendering, which now happens far more often. */
 async function markRead(messages){
   const unread = messages.filter(m=>m.direction==='outbound' && ['accepted','sent','delivered'].includes(m.status));
-  if(!unread.length || state.reading) return;
-  state.reading=true;
+  if(!unread.length) return;
+  // A read already in flight would otherwise swallow this one: the guard used
+  // to drop the call entirely, so a message arriving mid-read stayed unread
+  // until the next full load. Wait for the current one, then re-check.
+  if(state.reading){
+    await state.reading;
+    const still = [...state.messages.values()].filter(
+      m=>m.direction==='outbound' && ['accepted','sent','delivered'].includes(m.status));
+    if(!still.length) return;
+  }
+  let settle;
+  state.reading = new Promise(resolve=>{ settle = resolve; });
   try{
     await req(`/_sandbox/phones/${encodeURIComponent(state.wa)}/read`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({phone_number_id:state.activePhone})});
     unread.forEach(m=>m.status='read');
@@ -304,7 +314,7 @@ async function markRead(messages){
     // waiting for an observer event: the read POST does not broadcast to
     // this page's own wa_id.
     await loadUnread(); renderMobiles(); renderChatList();
-  }finally{ state.reading=false; }
+  }finally{ state.reading=null; settle(); }
 }
 
 /* Fetch the page of older messages before the ones already held, preserving

@@ -250,6 +250,10 @@ function fillSelectors(){
 
 /* ---- templates / webhooks ---- */
 async function loadTemplates(){
+  // Templates are fetched per business account, one request each, so this pane
+  // is blank for longer the more senders exist. The placeholder goes up before
+  // the token check, or an early return leaves an empty pane behind.
+  showSkeleton('#template-list', 3);
   if(!state.config.access_token) return;
   let all=[];
   for(const b of state.businesses){
