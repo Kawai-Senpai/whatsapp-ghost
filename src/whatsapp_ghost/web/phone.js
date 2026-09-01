@@ -50,6 +50,17 @@ function renderTemplateBody(name, tpl){
   });
 }
 
+function renderTemplateHeaderMedia(tpl){
+  const header = (tpl.components || []).find(c => (c.type||'').toLowerCase() === 'header');
+  const parameter = header?.parameters?.[0] || {};
+  const mediaType = ['image','video','document'].find(type => parameter.type === type && parameter[type]);
+  if(!mediaType) return null;
+  const media = parameter[mediaType] || {};
+  const stored = media.id && state.config.access_token
+    ? `/_sandbox/media/${encodeURIComponent(media.id)}?access_token=${encodeURIComponent(state.config.access_token)}` : '';
+  return {mtype:mediaType, src:media.link || stored, label:{image:'Photo',video:'Video',document:'Document'}[mediaType]};
+}
+
 function sentButtonParameter(tpl, index){
   const sent = (tpl.components || []).find(c =>
     (c.type||'').toLowerCase() === 'button' && Number(c.index) === index);
@@ -66,7 +77,7 @@ function renderTemplateButtons(name, tpl){
     if(type==='URL'){
       const suffix=parameter.text ?? parameter.payload ?? '';
       const href=String(button.url||'').replace(/\{\{1\}\}/g,encodeURIComponent(suffix));
-      if(!/^https?:\/\//i.test(href)) return '';
+      if(!/^(https?:\/\/|tel:)/i.test(href)) return '';
       return `<a class="tpl-button" href="${esc(href)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">↗ ${esc(label)}</a>`;
     }
     if(type==='PHONE_NUMBER'){
@@ -95,7 +106,7 @@ function messageText(m){
     const name = tpl.name || p.name || 'template';
     // A real client shows the rendered body, not the template name, so the
     // positional {{n}} values are substituted from the sent parameters.
-    return {kind:'template', name, text: renderTemplateBody(name, tpl), buttons:renderTemplateButtons(name,tpl)};
+    return {kind:'template', name, text: renderTemplateBody(name, tpl), buttons:renderTemplateButtons(name,tpl), headerMedia:renderTemplateHeaderMedia(tpl)};
   }
   if(t === 'button') return {kind:'text', text:p.button?.text || p.button?.payload || 'Button reply'};
   if(['image','video','audio','document','sticker'].includes(t)){
@@ -437,7 +448,10 @@ function renderMessages(options){
     if(quoted){const quote=messageText(quoted);bodyHtml+=`<div class="reply-quote"><b>${quoted.direction==='inbound'?'You':'Business'}</b><span>${esc(quote.text||quote.caption||quote.name||'Message')}</span></div>`;}
     if(val.kind==='template'){
       const buttons=(val.buttons||[]).length?`<div class="tpl-buttons">${val.buttons.join('')}</div>`:'';
-      bodyHtml = `<span class="tpl-tag">TEMPLATE</span><span class="body">${esc(val.text || val.name)}</span>${buttons}`;
+      const header=val.headerMedia?.mtype==='image' && val.headerMedia.src
+        ? `<img class="media-thumb tpl-header-media" src="${esc(val.headerMedia.src)}" alt="Approved arrival selfie">`
+        : val.headerMedia ? `<span class="tpl-tag">${esc(val.headerMedia.label).toUpperCase()}</span>` : '';
+      bodyHtml = `${header}<span class="tpl-tag">TEMPLATE</span><span class="body">${esc(val.text || val.name)}</span>${buttons}`;
     } else if(val.kind==='media'){
       if(val.mtype==='image' && val.src) bodyHtml += `<img class="media-thumb" src="${esc(val.src)}" alt="">`;
       else bodyHtml += `<span class="tpl-tag">${esc(val.label).toUpperCase()}</span>`;

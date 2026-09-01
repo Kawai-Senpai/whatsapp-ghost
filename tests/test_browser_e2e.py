@@ -129,6 +129,14 @@ def test_console_displays_actionable_meta_error_details(page: Page, live_server:
 def test_phone_renders_and_activates_template_buttons(page: Page, live_server: tuple[str, Path]) -> None:
     base_url, _ = live_server
     headers = {"Authorization": "Bearer browser-token"}
+    uploaded = httpx.post(
+        base_url + "/v26.0/PHONE_LOCAL/media",
+        headers=headers,
+        data={"messaging_product": "whatsapp"},
+        files={"file": ("arrival.png", ONE_PIXEL_PNG, "image/png")},
+    )
+    assert uploaded.status_code == 200, uploaded.text
+    media_id = uploaded.json()["id"]
     created = httpx.post(
         base_url + "/v26.0/WABA_LOCAL/message_templates",
         headers=headers,
@@ -138,6 +146,11 @@ def test_phone_renders_and_activates_template_buttons(page: Page, live_server: t
             "category": "UTILITY",
             "_sandbox_auto_approve": True,
             "components": [
+                {
+                    "type": "HEADER",
+                    "format": "IMAGE",
+                    "example": {"header_handle": ["https://example.test/arrival.png"]},
+                },
                 {
                     "type": "BODY",
                     "text": "Hello {{1}}, your trip is ready.",
@@ -170,6 +183,10 @@ def test_phone_renders_and_activates_template_buttons(page: Page, live_server: t
                 "name": "browser_buttons",
                 "language": {"code": "en_US"},
                 "components": [
+                    {
+                        "type": "header",
+                        "parameters": [{"type": "image", "image": {"id": media_id}}],
+                    },
                     {"type": "body", "parameters": [{"type": "text", "text": "Alex"}]},
                     {
                         "type": "button",
@@ -191,6 +208,10 @@ def test_phone_renders_and_activates_template_buttons(page: Page, live_server: t
 
     page.goto(base_url + "/phone?phone=15550002001&business=PHONE_LOCAL")
     message = page.locator(".msg.tpl").last
+    image = message.locator("img.tpl-header-media")
+    expect(image).to_be_visible()
+    expect(image).to_have_js_property("complete", True)
+    assert image.evaluate("element => element.naturalWidth") > 0
     expect(message.locator(".body")).to_have_text("Hello Alex, your trip is ready.")
     expect(message.get_by_role("button", name="Acknowledge")).to_be_visible()
     link = message.get_by_role("link", name="View trip")
