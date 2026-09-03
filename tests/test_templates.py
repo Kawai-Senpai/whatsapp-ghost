@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
 
@@ -213,3 +214,64 @@ def test_media_header_requires_uploaded_handle(client: TestClient, headers: dict
     })
 
     assert response.status_code == 200
+
+
+def _handoff_template(url: str, **button: object) -> dict[str, object]:
+    return {
+        "name": "ops_handoff", "language": "en_US", "category": "UTILITY",
+        "components": [
+            {"type": "BODY", "text": "Hi {{1}}, our operations team looks after your trip.",
+             "example": {"body_text": [["Alex"]]}},
+            {"type": "BUTTONS", "buttons": [
+                {"type": "URL", "text": "Chat with Operations", "url": url, **button},
+            ]},
+        ],
+    }
+
+
+@pytest.mark.parametrize("url", [
+    "https://wa.me/{{1}}",
+    "https://api.whatsapp.com/send?phone={{1}}",
+    "http://WA.ME/{{1}}",
+])
+def test_whatsapp_link_url_buttons_are_rejected(
+    client: TestClient, headers: dict[str, str], url: str,
+) -> None:
+    response = client.post("/v25.0/WABA_LOCAL/message_templates", headers=headers,
+                           json=_handoff_template(url, example=["919876543210"]))
+
+    assert response.status_code == 400
+    error = response.json()["error"]
+    assert error["code"] == 100
+    assert error["error_subcode"] == 2388081
+    assert error["type"] == "OAuthException"
+    assert error["is_transient"] is False
+    assert error["error_user_title"] == "Error while adding button URL"
+    assert error["error_user_msg"] == "Direct links to WhatsApp aren't allowed for buttons."
+
+
+@pytest.mark.parametrize("url", [
+    "https://travel-xs.test/ops/{{1}}",
+    "https://example.test/guides/wa.me-explained",
+])
+def test_non_whatsapp_url_buttons_are_still_accepted(
+    client: TestClient, headers: dict[str, str], url: str,
+) -> None:
+    response = client.post("/v25.0/WABA_LOCAL/message_templates", headers=headers,
+                           json=_handoff_template(url, example=["919876543210"]))
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "PENDING"
+
+
+def test_missing_button_example_is_reported_before_the_whatsapp_link(
+    client: TestClient, headers: dict[str, str],
+) -> None:
+    """Meta validates the absent example first; verified against the live Graph API."""
+    response = client.post("/v25.0/WABA_LOCAL/message_templates", headers=headers,
+                           json=_handoff_template("https://wa.me/{{1}}"))
+
+    assert response.status_code == 400
+    error = response.json()["error"]
+    assert error["error_subcode"] == 2388043
+    assert error["error_user_msg"] == "component of type BUTTONS is missing expected field(s) (example)"

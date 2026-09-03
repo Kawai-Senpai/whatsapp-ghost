@@ -164,6 +164,9 @@ def _validate_footer(footer: dict[str, Any]) -> TemplateValidationError | None:
     return None
 
 
+WA_LINK_RE = re.compile(r"(?://|^)(?:[\w-]+\.)*(?:wa\.me|whatsapp\.com)(?:[/:?#]|$)", re.IGNORECASE)
+
+
 def _validate_buttons(component: dict[str, Any]) -> TemplateValidationError | None:
     buttons = component.get("buttons")
     if not isinstance(buttons, list) or not 1 <= len(buttons) <= 10:
@@ -187,7 +190,17 @@ def _validate_buttons(component: dict[str, Any]) -> TemplateValidationError | No
             if len(set(variables)) > 1:
                 return TemplateValidationError("A URL button supports at most one parameter.")
             if variables and (not isinstance(button.get("example"), list) or len(button["example"]) != 1):
-                return TemplateValidationError("A dynamic URL button requires one flat example value.")
+                return TemplateValidationError(
+                    "component of type BUTTONS is missing expected field(s) (example)",
+                    subcode=2388043,
+                    title='Message template "components" param is missing expected field(s)',
+                )
+            if WA_LINK_RE.search(url):
+                return TemplateValidationError(
+                    "Direct links to WhatsApp aren't allowed for buttons.",
+                    subcode=2388081,
+                    title="Error while adding button URL",
+                )
         elif button_type == "PHONE_NUMBER" and not button.get("phone_number"):
             return TemplateValidationError("PHONE_NUMBER buttons require phone_number.")
         elif button_type not in {"QUICK_REPLY", "URL", "PHONE_NUMBER", "COPY_CODE", "OTP"}:
