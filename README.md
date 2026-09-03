@@ -57,6 +57,8 @@ container:
 | ⏰ | **Time travel** | Test the 24-hour customer-service window in seconds |
 | 💾 | **Persistent state** | Shared SQLite state across the API, console, and phones |
 | 🎛️ | **Testing modes** | Strict and loose validation for different integration stages |
+| 🛡️ | **Template validation** | Meta's own shape rules, checked at submission |
+| 📡 | **Live console** | New messages appear without a refresh, across every phone |
 
 ```mermaid
 flowchart LR
@@ -312,6 +314,44 @@ Like Meta, newly submitted local templates return `PENDING` by default. Send
 `"_sandbox_auto_approve": true` during creation when a test needs immediate
 approval; that underscore-prefixed field is a simulator-only extension.
 
+### Template validation
+
+Submissions are validated against Meta's documented shape before they are
+accepted, so a template that Ghost rejects would have been rejected upstream.
+A failure returns a Meta-style error naming the offending component.
+
+**Body**
+
+- text at most 1024 characters
+- parameters require an `example`, nested as `example.body_text` = `[[...]]`
+- the example count must match the number of placeholders
+- named parameters require `body_text_named_params`, matching the text exactly
+
+**Header**
+
+- text at most 60 characters, and at most **one** parameter
+- a parameterized text header needs exactly one example
+- `IMAGE` / `VIDEO` / `DOCUMENT` headers need one uploaded `header_handle` and
+  no text
+- `LOCATION` headers carry no text
+
+**Footer**
+
+- at most 60 characters, and no parameters at all
+
+**Buttons**
+
+- between 1 and 10 buttons, each an object with a 1-25 character label
+- at most **3 quick replies**, **2 URL** and **1 phone number**
+- quick-reply and call-to-action buttons cannot be interleaved: group them
+- a URL button supports at most one parameter, and a dynamic URL needs one flat
+  example value
+- `PHONE_NUMBER` buttons require `phone_number`
+
+**Parameter values at send time** cannot contain newlines, tabs, or more than
+four consecutive spaces. This mirrors Meta and is the usual cause of a send
+that looks well-formed but is refused.
+
 ## ⏱️ Time travel and multiple phones
 
 ```powershell
@@ -353,7 +393,60 @@ Defaults work immediately. `.env` is loaded automatically; `.env.example` docume
 
 ## 🧰 Sandbox control API
 
-Everything below `/_sandbox` is intentionally not Meta-compatible: health/config/reset, virtual clock, phones and inbound messages, message/status inspection, webhook inspection/replay, media downloads, and the client WebSocket. This separation prevents test conveniences from leaking into the compatibility surface.
+Everything below `/_sandbox` is intentionally not Meta-compatible. The
+separation prevents test conveniences from leaking into the compatibility
+surface: your application only ever calls the Graph routes, and never needs to
+know Ghost is not Meta.
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/_sandbox/health` | liveness, mode, clock, database path |
+| `GET` | `/_sandbox/config` | base URL, access token, demo ids |
+| `POST` | `/_sandbox/reset` | wipe everything and re-seed the demo |
+| `GET` `POST` | `/_sandbox/clock` | virtual clock (see below) |
+| `GET` `POST` | `/_sandbox/phones` | list or create simulated customers |
+| `PATCH` `DELETE` | `/_sandbox/phones/{wa_id}` | rename or remove one |
+| `POST` | `/_sandbox/phones/{wa_id}/messages` | **send an inbound message** |
+| `POST` | `/_sandbox/phones/{wa_id}/read` | mark our messages read |
+| `GET` `POST` | `/_sandbox/phones/{wa_id}/pins` | pinned conversations |
+| `GET` | `/_sandbox/messages` | everything sent, newest first |
+| `POST` | `/_sandbox/messages/{id}/status` | force a delivery status |
+| `GET` | `/_sandbox/conversations` | conversation list |
+| `GET` | `/_sandbox/unread` | unread counts |
+| `GET` | `/_sandbox/media/{media_id}` | download bytes |
+| `GET` | `/_sandbox/webhooks` | delivery log with every attempt |
+| `POST` | `/_sandbox/webhooks/{delivery_id}/replay` | re-deliver one |
+| `GET` | `/_sandbox/webhook-subscriptions` | who is subscribed |
+| `GET` `POST` | `/_sandbox/apps` | apps and tokens |
+| `POST` | `/_sandbox/apps/{app_id}/rotate-token` | rotate a token |
+| `GET` `POST` | `/_sandbox/businesses` | WABAs |
+| `PATCH` | `/_sandbox/businesses/{waba_id}` | rename |
+| `POST` | `/_sandbox/businesses/{waba_id}/phone-numbers` | add a sender |
+| `PATCH` | `/_sandbox/phone-numbers/{phone_id}` | edit a sender |
+| `WS` | `/_sandbox/clients/{wa_id}` | live events for one customer |
+
+`GET /openapi.json` is the machine-readable version of all of it.
+
+### Paging the busy endpoints
+
+`/_sandbox/messages` and `/_sandbox/conversations` take filters, and reading a
+long history without them is slow:
+
+```text
+GET /_sandbox/messages?wa_id=15550002001&limit=50
+GET /_sandbox/messages?phone_number_id=PHONE_LOCAL&before={message_id}
+GET /_sandbox/conversations?wa_id=15550002001
+```
+
+`limit` defaults to 100 and caps at 500; `before` takes a message id and pages
+backwards. `scripts/seed_bulk_messages.py --count 1000` writes a long
+conversation straight into SQLite when you need to test loading behaviour.
+
+> [!WARNING]
+> `GET /_sandbox/webhooks` is **not** paginated. It selects every delivery and
+> runs a per-row query for its attempts, so on an instance with a large webhook
+> log it can hang rather than answer. Until it takes a `limit`, inspect recent
+> traffic from the console instead.
 
 ## 🎯 Fidelity and current boundary
 
