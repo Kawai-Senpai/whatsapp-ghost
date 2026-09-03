@@ -220,10 +220,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         store.initialize(settings.access_token, settings.app_secret)
         return {"success": True}
 
+    def _future_messages() -> list[Any]:
+        """Messages stamped after the current clock.
+
+        Time travel is a feature, but resetting the clock leaves anything
+        written while it was ahead sitting in the future, where it sorts to
+        the bottom of every transcript and never ages out.
+        """
+        return store.all(
+            "SELECT id,conversation_id,direction,created_at FROM messages WHERE created_at > ? ORDER BY created_at",
+            (store.now().isoformat(),),
+        )
+
     @app.get("/_sandbox/clock")
     def clock_get() -> dict[str, Any]:
         frozen = store.one("SELECT frozen_at FROM clock_state WHERE singleton=1")["frozen_at"]
-        return {"now": store.now().isoformat(), "frozen": bool(frozen)}
+        payload: dict[str, Any] = {"now": store.now().isoformat(), "frozen": bool(frozen)}
+        if future := _future_messages():
+            payload["future_messages"] = len(future)
+            payload["warning"] = (
+                f"{len(future)} message(s) are stamped ahead of the current clock. "
+                "POST /_sandbox/clock {\"action\":\"discard_future\"} to remove them."
+            )
+        return payload
 
     @app.post("/_sandbox/clock")
     def clock_set(body: dict[str, Any] = Body(...)):
@@ -231,13 +250,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             if action == "reset":
                 store.execute("UPDATE clock_state SET frozen_at=NULL WHERE singleton=1")
+            elif action == "discard_future":
+                doomed = _future_messages()
+                for row in doomed:
+                    store.execute("DELETE FROM message_status_events WHERE message_id=?", (row["id"],))
+                    store.execute("DELETE FROM messages WHERE id=?", (row["id"],))
+                return {**clock_get(), "discarded": len(doomed)}
             elif action == "set":
                 store.execute("UPDATE clock_state SET frozen_at=? WHERE singleton=1", (parse_datetime(body["value"]).isoformat(),))
             elif action == "advance":
                 value = (store.now() + parse_duration(body["value"])).astimezone(timezone.utc)
                 store.execute("UPDATE clock_state SET frozen_at=? WHERE singleton=1", (value.isoformat(),))
             else:
-                return JSONResponse({"error": "action must be set, advance, or reset"}, status_code=400)
+                return JSONResponse(
+                    {"error": "action must be set, advance, reset, or discard_future"}, status_code=400
+                )
         except (KeyError, TypeError, ValueError) as exc:
             return JSONResponse({"error": str(exc) or "A valid clock value is required"}, status_code=400)
         return clock_get()

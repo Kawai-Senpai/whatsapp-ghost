@@ -72,4 +72,38 @@ def test_clock_set_advance_and_reset(client: TestClient) -> None:
 def test_invalid_clock_action_is_rejected(client: TestClient) -> None:
     response = client.post("/_sandbox/clock", json={"action": "warp", "value": "3h"})
     assert response.status_code == 400
-    assert "set, advance, or reset" in response.json()["error"]
+    assert "set, advance, reset, or discard_future" in response.json()["error"]
+
+
+def test_clock_flags_and_discards_messages_left_in_the_future(
+    client: TestClient, headers: dict[str, str],
+) -> None:
+    """Resetting a forward clock used to leave future-stamped messages behind."""
+    assert client.post("/_sandbox/clock", json={"action": "advance", "value": "24h"}).status_code == 200
+    client.post("/_sandbox/phones", json={"wa_id": "919812300777", "display_name": "Future"})
+    sent = client.post("/_sandbox/phones/919812300777/messages", json={
+        "phone_number_id": "PHONE_LOCAL", "type": "text", "text": {"body": "from the future"},
+    })
+    assert sent.status_code == 201
+    assert client.post("/_sandbox/clock", json={"action": "reset"}).status_code == 200
+
+    flagged = client.get("/_sandbox/clock").json()
+    assert flagged["frozen"] is False
+    assert flagged["future_messages"] == 1
+    assert "ahead of the current clock" in flagged["warning"]
+
+    cleaned = client.post("/_sandbox/clock", json={"action": "discard_future"}).json()
+    assert cleaned["discarded"] == 1
+    assert "future_messages" not in client.get("/_sandbox/clock").json()
+
+
+def test_frozen_clock_without_offset_is_read_back_as_utc(tmp_path) -> None:
+    """A naive frozen_at would make .timestamp() drift by the host's offset."""
+    from whatsapp_ghost.db import Store
+
+    store = Store(tmp_path / "ghost.db")
+    store.initialize("token", "secret")
+    store.execute("UPDATE clock_state SET frozen_at=? WHERE singleton=1", ("2026-09-03T12:00:00",))
+
+    assert store.now().tzinfo is not None
+    assert store.now().isoformat() == "2026-09-03T12:00:00+00:00"

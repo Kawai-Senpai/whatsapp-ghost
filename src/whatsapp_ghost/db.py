@@ -154,5 +154,9 @@ class Store:
     def now(self) -> datetime:
         row = self.one("SELECT frozen_at FROM clock_state WHERE singleton=1")
         if row and row["frozen_at"]:
-            return datetime.fromisoformat(row["frozen_at"])
+            frozen = datetime.fromisoformat(row["frozen_at"])
+            # A frozen value stored without an offset would be read back as
+            # naive, and .timestamp() would then reinterpret it as local time,
+            # writing wire timestamps hours away from the created_at beside it.
+            return frozen if frozen.tzinfo else frozen.replace(tzinfo=timezone.utc)
         return datetime.now(timezone.utc)
