@@ -275,3 +275,159 @@ def test_missing_button_example_is_reported_before_the_whatsapp_link(
     error = response.json()["error"]
     assert error["error_subcode"] == 2388043
     assert error["error_user_msg"] == "component of type BUTTONS is missing expected field(s) (example)"
+
+
+def _carousel_card(header_format: str = "IMAGE", *, body: bool = True,
+                   buttons: list[dict] | None = None) -> dict:
+    components: list[dict] = [
+        {"type": "HEADER", "format": header_format, "example": {"header_handle": ["h1"]}},
+    ]
+    if body:
+        components.append({"type": "BODY", "text": "Card for {{1}} today.",
+                           "example": {"body_text": [["Alex"]]}})
+    components.append({"type": "BUTTONS", "buttons": buttons or [
+        {"type": "QUICK_REPLY", "text": "More"}]})
+    return {"components": components}
+
+
+def _carousel_payload(cards: list[dict], name: str = "promo_carousel") -> dict:
+    return {
+        "name": name, "language": "en_US", "category": "MARKETING",
+        "components": [
+            {"type": "BODY", "text": "Hi {{1}}, this week's offers.",
+             "example": {"body_text": [["Alex"]]}},
+            {"type": "CAROUSEL", "cards": cards},
+        ],
+    }
+
+
+def test_carousel_template_is_accepted(client: TestClient, headers: dict[str, str]) -> None:
+    response = client.post("/v25.0/WABA_LOCAL/message_templates", headers=headers,
+                           json=_carousel_payload([_carousel_card(), _carousel_card()]))
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "PENDING"
+
+
+@pytest.mark.parametrize("cards, reason", [
+    ([_carousel_card()], "between 2 and 10 cards"),
+    ([_carousel_card()] * 11, "between 2 and 10 cards"),
+    ([_carousel_card("IMAGE"), _carousel_card("VIDEO")], "same components"),
+    ([_carousel_card(body=True), _carousel_card(body=False)], "same components"),
+])
+def test_carousel_uniformity_and_size_are_enforced(
+    client: TestClient, headers: dict[str, str], cards: list[dict], reason: str,
+) -> None:
+    response = client.post("/v25.0/WABA_LOCAL/message_templates", headers=headers,
+                           json=_carousel_payload(cards))
+
+    assert response.status_code == 400
+    assert reason in response.json()["error"]["error_user_msg"]
+
+
+def test_carousel_card_rejects_footer_component(client: TestClient, headers: dict[str, str]) -> None:
+    card = _carousel_card()
+    card["components"].append({"type": "FOOTER", "text": "nope"})
+    response = client.post("/v25.0/WABA_LOCAL/message_templates", headers=headers,
+                           json=_carousel_payload([card, _carousel_card()]))
+
+    assert response.status_code == 400
+    assert "cannot contain a 'FOOTER' component" in response.json()["error"]["error_user_msg"]
+
+
+def _flow_payload(name: str = "flow_tpl", **button: object) -> dict:
+    return {
+        "name": name, "language": "en_US", "category": "UTILITY",
+        "components": [
+            {"type": "BODY", "text": "Hi {{1}}, complete your booking.",
+             "example": {"body_text": [["Alex"]]}},
+            {"type": "BUTTONS", "buttons": [
+                {"type": "FLOW", "text": "Open form", **button}]},
+        ],
+    }
+
+
+def test_flow_button_is_accepted(client: TestClient, headers: dict[str, str]) -> None:
+    response = client.post("/v25.0/WABA_LOCAL/message_templates", headers=headers,
+                           json=_flow_payload(flow_id="123", navigate_screen="WELCOME"))
+
+    assert response.status_code == 200
+
+
+def test_flow_button_accepts_data_exchange_without_screen(
+    client: TestClient, headers: dict[str, str],
+) -> None:
+    response = client.post("/v25.0/WABA_LOCAL/message_templates", headers=headers,
+                           json=_flow_payload(flow_name="signup", flow_action="data_exchange"))
+
+    assert response.status_code == 200
+
+
+@pytest.mark.parametrize("button, reason", [
+    ({}, "exactly one of flow_id or flow_name"),
+    ({"flow_id": "1", "flow_name": "x", "navigate_screen": "S"}, "exactly one of flow_id or flow_name"),
+    ({"flow_id": "1"}, "navigate_screen"),
+    ({"flow_id": "1", "flow_action": "teleport"}, "navigate or data_exchange"),
+    ({"flow_id": "1", "navigate_screen": "S", "mode": "sideways"}, "draft or published"),
+])
+def test_flow_button_field_rules(
+    client: TestClient, headers: dict[str, str], button: dict, reason: str,
+) -> None:
+    response = client.post("/v25.0/WABA_LOCAL/message_templates", headers=headers,
+                           json=_flow_payload(**button))
+
+    assert response.status_code == 400
+    assert reason in response.json()["error"]["error_user_msg"]
+
+
+@pytest.mark.parametrize("button_type", ["CATALOG", "MPM", "VOICE_CALL"])
+def test_catalog_mpm_and_voice_call_buttons_are_accepted(
+    client: TestClient, headers: dict[str, str], button_type: str,
+) -> None:
+    response = client.post("/v25.0/WABA_LOCAL/message_templates", headers=headers, json={
+        "name": f"tpl_{button_type.lower()}", "language": "en_US", "category": "MARKETING",
+        "components": [
+            {"type": "BODY", "text": "Hi {{1}}, browse our range.",
+             "example": {"body_text": [["Alex"]]}},
+            {"type": "BUTTONS", "buttons": [{"type": button_type, "text": "View"}]},
+        ],
+    })
+
+    assert response.status_code == 200
+
+
+def test_limited_time_offer_requires_marketing_category(
+    client: TestClient, headers: dict[str, str],
+) -> None:
+    payload = {
+        "name": "lto_tpl", "language": "en_US", "category": "UTILITY",
+        "components": [
+            {"type": "BODY", "text": "Hi {{1}}, offer inside.",
+             "example": {"body_text": [["Alex"]]}},
+            {"type": "LIMITED_TIME_OFFER", "limited_time_offer": {"text": "Ends soon"}},
+        ],
+    }
+    response = client.post("/v25.0/WABA_LOCAL/message_templates", headers=headers, json=payload)
+    assert response.status_code == 400
+    assert "only supported on MARKETING" in response.json()["error"]["error_user_msg"]
+
+    payload["category"] = "MARKETING"
+    payload["name"] = "lto_tpl_marketing"
+    assert client.post("/v25.0/WABA_LOCAL/message_templates", headers=headers,
+                       json=payload).status_code == 200
+
+
+def test_limited_time_offer_text_length_is_enforced(
+    client: TestClient, headers: dict[str, str],
+) -> None:
+    response = client.post("/v25.0/WABA_LOCAL/message_templates", headers=headers, json={
+        "name": "lto_long", "language": "en_US", "category": "MARKETING",
+        "components": [
+            {"type": "BODY", "text": "Hi {{1}}, offer inside.",
+             "example": {"body_text": [["Alex"]]}},
+            {"type": "LIMITED_TIME_OFFER", "limited_time_offer": {"text": "x" * 17}},
+        ],
+    })
+
+    assert response.status_code == 400
+    assert "16 characters" in response.json()["error"]["error_user_msg"]

@@ -77,12 +77,26 @@ function renderTemplateButtons(name, tpl){
     if(type==='URL'){
       const suffix=parameter.text ?? parameter.payload ?? '';
       const href=String(button.url||'').replace(/\{\{1\}\}/g,encodeURIComponent(suffix));
-      if(!/^(https?:\/\/|tel:)/i.test(href)) return '';
+      if(!/^(https?:\/\/|tel:)/i.test(href))
+        return `<button type="button" class="tpl-button" disabled title="Unsupported button URL">↗ ${esc(label)}</button>`;
       return `<a class="tpl-button" href="${esc(href)}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">↗ ${esc(label)}</a>`;
     }
     if(type==='PHONE_NUMBER'){
       const phone=String(button.phone_number||'').replace(/[^+\d]/g,'');
       return `<a class="tpl-button" href="tel:${esc(phone)}" onclick="event.stopPropagation()">☎ ${esc(label)}</a>`;
+    }
+    if(type==='VOICE_CALL'){
+      return `<button type="button" class="tpl-button" data-template-reply="${esc(label)}" data-template-label="${esc(label)}">☎ ${esc(label)}</button>`;
+    }
+    if(type==='COPY_CODE'){
+      const code=String((Array.isArray(button.example)?button.example[0]:button.example) ?? parameter.coupon_code ?? '');
+      return `<button type="button" class="tpl-button" data-copy-code="${esc(code)}" data-template-label="${esc(label)}" onclick="event.stopPropagation();navigator.clipboard&&navigator.clipboard.writeText('${esc(code)}')">⧉ ${esc(label)}</button>`;
+    }
+    if(type==='FLOW'){
+      return `<button type="button" class="tpl-button" data-template-reply="${esc(button.flow_id||button.flow_name||label)}" data-template-label="${esc(label)}">☷ ${esc(button.flow_cta||label)}</button>`;
+    }
+    if(type==='CATALOG'||type==='MPM'){
+      return `<button type="button" class="tpl-button" data-template-reply="${esc(label)}" data-template-label="${esc(label)}">▤ ${esc(label)}</button>`;
     }
     const payload=parameter.payload || parameter.text || label;
     return `<button type="button" class="tpl-button" data-template-reply="${esc(payload)}" data-template-label="${esc(label)}">${esc(label)}</button>`;
