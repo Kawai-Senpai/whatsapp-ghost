@@ -33,15 +33,22 @@ container:
 
 <table>
 <tr>
-<td width="50%"><a href="assets/screenshots/console-dashboard.png"><img src="assets/screenshots/console-dashboard.png" alt="Developer console dashboard" width="100%"></a><br><sub><b>Dashboard</b> · resources, drop-in endpoint and setup tasks</sub></td>
-<td width="50%"><a href="assets/screenshots/console-credentials.png"><img src="assets/screenshots/console-credentials.png" alt="Credentials page" width="100%"></a><br><sub><b>Credentials</b> · every ID, token and secret in one place</sub></td>
+<td colspan="2"><a href="assets/screenshots/console-dashboard.png"><img src="assets/screenshots/console-dashboard.png" alt="Developer console dashboard" width="100%"></a><br><sub><b>Dashboard</b> · live message feed, webhook notifications, test numbers and traffic analytics on one page</sub></td>
 </tr>
 <tr>
-<td><a href="assets/screenshots/console-webhooks.png"><img src="assets/screenshots/console-webhooks.png" alt="Webhooks page" width="100%"></a><br><sub><b>Webhooks</b> · signed deliveries, attempts and replay</sub></td>
-<td><a href="assets/screenshots/console-templates.png"><img src="assets/screenshots/console-templates.png" alt="Message templates" width="100%"></a><br><sub><b>Templates</b> · approved local templates with variables</sub></td>
+<td width="50%"><a href="assets/screenshots/phone-simulator.png"><img src="assets/screenshots/phone-simulator.png" alt="Phone simulator" width="100%"></a><br><sub><b>Phone simulator</b> · a real conversation with rendered templates, tappable buttons and delivery ticks</sub></td>
+<td width="50%"><a href="assets/screenshots/phone-diagnostics.png"><img src="assets/screenshots/phone-diagnostics.png" alt="Per-message webhook diagnostics" width="100%"></a><br><sub><b>Message diagnostics</b> · hover any message for its status hops, delays and every webhook it produced</sub></td>
 </tr>
 <tr>
-<td colspan="2"><a href="assets/screenshots/phone-simulator.png"><img src="assets/screenshots/phone-simulator.png" alt="Phone simulator" width="100%"></a><br><sub><b>Phone simulator</b> · a real conversation with inbound media, delivery ticks and live WebSocket updates</sub></td>
+<td><a href="assets/screenshots/phone-analytics.png"><img src="assets/screenshots/phone-analytics.png" alt="Per-chat analytics" width="100%"></a><br><sub><b>Chat analytics</b> · when a conversation actually happened, by hour and by day</sub></td>
+<td><a href="assets/screenshots/console-analytics.png"><img src="assets/screenshots/console-analytics.png" alt="Cross-number traffic analytics" width="100%"></a><br><sub><b>Traffic analytics</b> · which numbers got what, across every sender</sub></td>
+</tr>
+<tr>
+<td><a href="assets/screenshots/console-webhooks.png"><img src="assets/screenshots/console-webhooks.png" alt="Webhooks page" width="100%"></a><br><sub><b>Webhooks</b> · signed deliveries, attempts, responses and replay</sub></td>
+<td><a href="assets/screenshots/console-templates.png"><img src="assets/screenshots/console-templates.png" alt="Message templates" width="100%"></a><br><sub><b>Templates</b> · approved local templates with variables and buttons</sub></td>
+</tr>
+<tr>
+<td colspan="2"><a href="assets/screenshots/console-credentials.png"><img src="assets/screenshots/console-credentials.png" alt="Credentials page" width="100%"></a><br><sub><b>Credentials</b> · every ID, token and secret in one place</sub></td>
 </tr>
 </table>
 
@@ -59,6 +66,10 @@ container:
 | 🎛️ | **Testing modes** | Strict and loose validation for different integration stages |
 | 🛡️ | **Template validation** | Meta's own shape rules, checked at submission |
 | 📡 | **Live console** | New messages appear without a refresh, across every phone |
+| 🔍 | **Message diagnostics** | Hover any message for its status hops, delays, and every webhook it produced |
+| 📊 | **Traffic analytics** | Per-chat and cross-number histograms: which number got what, and when |
+| 🧹 | **Chat and history clearing** | Clear one chat, every chat on a number, or the whole webhook log |
+| ⭐ | **Favourites and roster tools** | Star, search, add and edit test numbers without leaving the simulator |
 
 ```mermaid
 flowchart LR
@@ -289,6 +300,26 @@ Webhook bodies use the documented `whatsapp_business_account → entry → chang
 
 The standard verification endpoint is `GET /webhook` with `hub.mode`, `hub.verify_token`, and `hub.challenge` parameters.
 
+### Ticks and webhook delivery
+
+These are two different things, and the simulator keeps them apart:
+
+| Direction | What the ticks mean | Set by |
+|---|---|---|
+| Business → customer | The simulated phone received and opened it | The phone simulator, independent of your webhooks |
+| Customer → business | Your integration actually received it | The webhook carrying it returning `2xx` |
+
+The second row matters. The business has no device here, it has an integration,
+so for a customer's message the webhook *is* the delivery. A customer message
+sits at one tick while its webhook is unrouted, pending, or failing, and only
+becomes two ticks once a subscribed callback accepts it. Replaying a failed
+delivery successfully advances the ticks too.
+
+Hover any message in the simulator to see which of the two is which: the popover
+shows the status hops with their delays alongside every webhook the message
+produced, and says so explicitly when a double-ticked message never reached your
+server.
+
 ## 🖼️ Media and templates
 
 Supported media flow:
@@ -440,13 +471,34 @@ GET /_sandbox/conversations?wa_id=15550002001
 
 `limit` defaults to 100 and caps at 500; `before` takes a message id and pages
 backwards. `scripts/seed_bulk_messages.py --count 1000` writes a long
-conversation straight into SQLite when you need to test loading behaviour.
+conversation straight into SQLite when you need to test loading behaviour, and
+`scripts/seed_demo_conversations.py` populates a realistic multi-day history
+across several customers and senders, which is what the screenshots above show.
 
-> [!WARNING]
-> `GET /_sandbox/webhooks` is **not** paginated. It selects every delivery and
-> runs a per-row query for its attempts, so on an instance with a large webhook
-> log it can hang rather than answer. Until it takes a `limit`, inspect recent
-> traffic from the console instead.
+`GET /_sandbox/webhooks` pages the same way, with `limit` (default 100, max
+500), `before`, and an optional `status` filter. `GET /_sandbox/webhooks/stats`
+returns delivery counts by status without returning any deliveries, and
+`GET /_sandbox/stats` returns row counts for every table, so dashboards do not
+have to download a collection in order to count it.
+
+```text
+GET /_sandbox/webhooks?limit=100&status=failed
+GET /_sandbox/webhooks?before={delivery_id}
+DELETE /_sandbox/webhooks                      # drop the whole delivery log
+```
+
+Analytics and diagnostics are aggregated in SQL rather than in the browser, so
+they cost the same at any history size:
+
+```text
+GET /_sandbox/analytics?tz_offset=330                     # across every number
+GET /_sandbox/phones/{wa_id}/analytics?phone_number_id=…  # one chat
+GET /_sandbox/messages/{message_id}/diagnostics           # status hops + webhooks
+DELETE /_sandbox/phones/{wa_id}/messages                  # clear a chat
+```
+
+`tz_offset` is minutes to add to UTC. It is applied inside SQLite, so the
+hour-of-day and per-day buckets line up with the reader's own clock.
 
 ## 🎯 Fidelity and current boundary
 

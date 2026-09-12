@@ -7,14 +7,26 @@
   <link rel="stylesheet" href="/static/phone.css">
 </head>
 <body>
+  <!-- Icons: Lucide (ISC licensed), inlined so the sandbox keeps working offline.
+       Hand-drawn substitutes were replaced: they did not share a grid, a stroke
+       weight or an optical weight, and looked it. -->
   <svg class="icon-sprite" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs>
-    <symbol id="p-chat" viewBox="0 0 24 24"><path d="M21 11.5a8.5 8.5 0 0 1-12.5 7.5L4 20l1-4.5A8.5 8.5 0 1 1 21 11.5z"/></symbol>
-    <symbol id="p-menu" viewBox="0 0 24 24"><circle cx="12" cy="5" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="12" cy="19" r="1.4"/></symbol>
-    <symbol id="p-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></symbol>
-    <symbol id="p-back" viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></symbol>
-    <symbol id="p-emoji" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8.5 14a4 4 0 0 0 7 0"/><circle cx="9" cy="10" r=".6" fill="currentColor"/><circle cx="15" cy="10" r=".6" fill="currentColor"/></symbol>
-    <symbol id="p-attach" viewBox="0 0 24 24"><path d="M21 11l-8.5 8.5a5 5 0 0 1-7-7L14 4a3.5 3.5 0 0 1 5 5l-8.5 8.5a2 2 0 0 1-3-3L15 6"/></symbol>
-    <symbol id="p-send" viewBox="0 0 24 24"><path d="M3 20l18-8L3 4l3 8-3 8z"/><path d="M6 12h15"/></symbol>
+    <symbol id="p-chat" viewBox="0 0 24 24"><path d="M2.992 16.342a2 2 0 0 1 .094 1.167l-1.065 3.29a1 1 0 0 0 1.236 1.168l3.413-.998a2 2 0 0 1 1.099.092 10 10 0 1 0-4.777-4.719" /> <path d="M8 12h.01" /> <path d="M12 12h.01" /> <path d="M16 12h.01" /></symbol>
+    <symbol id="p-menu" viewBox="0 0 24 24"><circle cx="12" cy="12" r="1" /> <circle cx="12" cy="5" r="1" /> <circle cx="12" cy="19" r="1" /></symbol>
+    <symbol id="p-search" viewBox="0 0 24 24"><path d="m21 21-4.34-4.34" /> <circle cx="11" cy="11" r="8" /></symbol>
+    <symbol id="p-back" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6" /></symbol>
+    <symbol id="p-emoji" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" /> <path d="M8 14s1.5 2 4 2 4-2 4-2" /> <line x1="9" x2="9.01" y1="9" y2="9" /> <line x1="15" x2="15.01" y1="9" y2="9" /></symbol>
+    <symbol id="p-attach" viewBox="0 0 24 24"><path d="m16 6-8.414 8.586a2 2 0 0 0 2.829 2.829l8.414-8.586a4 4 0 1 0-5.657-5.657l-8.379 8.551a6 6 0 1 0 8.485 8.485l8.379-8.551" /></symbol>
+    <symbol id="p-send" viewBox="0 0 24 24"><path d="M3.714 3.048a.498.498 0 0 0-.683.627l2.843 7.627a2 2 0 0 1 0 1.396l-2.842 7.627a.498.498 0 0 0 .682.627l18-8.5a.5.5 0 0 0 0-.904z" /> <path d="M6 12h16" /></symbol>
+    <symbol id="p-plus" viewBox="0 0 24 24"><path d="M5 12h14" /> <path d="M12 5v14" /></symbol>
+    <symbol id="p-edit" viewBox="0 0 24 24"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z" /> <path d="m15 5 4 4" /></symbol>
+    <symbol id="p-grid" viewBox="0 0 24 24"><rect width="7" height="9" x="3" y="3" rx="1" /> <rect width="7" height="5" x="14" y="3" rx="1" /> <rect width="7" height="9" x="14" y="12" rx="1" /> <rect width="7" height="5" x="3" y="16" rx="1" /></symbol>
+    <symbol id="p-trash" viewBox="0 0 24 24"><path d="M10 11v6" /> <path d="M14 11v6" /> <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" /> <path d="M3 6h18" /> <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></symbol>
+    <symbol id="p-pin" viewBox="0 0 24 24"><path d="M12 17v5" /> <path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z" /></symbol>
+    <symbol id="p-chart" viewBox="0 0 24 24"><path d="M3 3v16a2 2 0 0 0 2 2h16" /> <rect x="15" y="5" width="4" height="12" rx="1" /> <rect x="7" y="8" width="4" height="9" rx="1" /></symbol>
+    <symbol id="p-broom" viewBox="0 0 24 24"><path d="m16 22-1-4" /> <path d="M19 13.99a1 1 0 0 0 1-1V12a2 2 0 0 0-2-2h-3a1 1 0 0 1-1-1V4a2 2 0 0 0-4 0v5a1 1 0 0 1-1 1H6a2 2 0 0 0-2 2v.99a1 1 0 0 0 1 1" /> <path d="M5 14h14l1.973 6.767A1 1 0 0 1 20 22H4a1 1 0 0 1-.973-1.233z" /> <path d="m8 22 1-4" /></symbol>
+    <symbol id="p-close" viewBox="0 0 24 24"><path d="M18 6 6 18" /> <path d="m6 6 12 12" /></symbol>
+    <symbol id="p-star" viewBox="0 0 24 24"><path d="M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z" /></symbol>
   </defs></svg>
 
   <!-- Cross-mobile inbox: which mobile got what, without hunting for it -->
@@ -26,19 +38,68 @@
       <button type="button" class="inbox-clear" id="inbox-clear" title="Clear this feed">Clear</button>
       <button type="button" class="inbox-toggle" id="inbox-toggle" title="Collapse">‹</button>
     </header>
+    <!-- Managing the roster from here is the point: adding, finding and renaming
+         a test number used to mean leaving for the console and coming back. -->
+    <div class="mobiles-tools">
+      <div class="mobiles-search">
+        <svg><use href="#p-search"/></svg>
+        <input id="mobile-search" type="search" placeholder="Search numbers" aria-label="Search test numbers">
+      </div>
+      <button type="button" class="mobiles-add" id="mobile-add" title="Add a test number"><svg><use href="#p-plus"/></svg></button>
+    </div>
     <div class="mobiles" id="mobiles"></div>
     <div class="feed" id="feed"></div>
+    <!-- Bottom-left, where an app's "back out of here" control belongs. -->
+    <a class="inbox-foot" href="/console" title="Back to the developer console">
+      <svg><use href="#p-grid"/></svg><span>Back to console</span></a>
   </aside>
+
+  <!-- Add / edit a simulated customer without leaving the simulator -->
+  <div class="sheet-back" id="mobile-sheet" hidden>
+    <form class="sheet" id="mobile-form">
+      <div class="sheet-head"><b id="mobile-sheet-title">Add a test number</b>
+        <button type="button" class="sheet-x" id="mobile-cancel" aria-label="Close">×</button></div>
+      <label for="mobile-wa">Phone number</label>
+      <input id="mobile-wa" inputmode="tel" autocomplete="off" placeholder="919876500100" required>
+      <label for="mobile-name">Display name</label>
+      <input id="mobile-name" autocomplete="off" placeholder="Test Traveller">
+      <label for="mobile-color">Accent colour</label>
+      <input id="mobile-color" type="color" value="#25D366">
+      <div class="sheet-error" id="mobile-error" hidden></div>
+      <div class="sheet-foot">
+        <button type="button" class="sheet-danger" id="mobile-delete" hidden>Delete</button>
+        <div class="spacer"></div>
+        <button type="button" class="sheet-btn" id="mobile-close">Cancel</button>
+        <button type="submit" class="sheet-btn primary" id="mobile-save">Save</button>
+      </div>
+    </form>
+  </div>
 
   <div class="app" id="app">
     <!-- Left pane -->
     <section class="pane">
       <header class="pane-head">
         <div class="me-avatar" id="me-avatar">Y</div>
+        <div class="me-main">
+          <div class="me-name" id="me-name">Test customer</div>
+          <div class="me-num" id="me-num"></div>
+        </div>
         <div class="spacer"></div>
         <button class="icon-btn" id="new-chat-btn" title="New chat"><svg><use href="#p-chat"/></svg></button>
         <button class="icon-btn" id="pane-menu-btn" title="Menu"><svg><use href="#p-menu"/></svg></button>
       </header>
+      <!-- A real picker over the registered business numbers. This button used
+           to only focus the search box, which read as broken. -->
+      <div class="pane-popover hidden" id="new-chat-menu">
+        <div class="pane-popover-head">Start a chat with</div>
+        <div class="pane-popover-list" id="new-chat-list"></div>
+      </div>
+      <div class="pane-popover hidden" id="pane-menu">
+        <button type="button" id="menu-add-number">Add a test number</button>
+        <button type="button" id="menu-switch-number">Switch test number</button>
+        <button type="button" id="menu-clear-every-chat" class="danger">Clear all my chats</button>
+        <a href="/console">Back to console</a>
+      </div>
       <div class="search-wrap">
         <div class="search-box"><svg><use href="#p-search"/></svg><input id="search" placeholder="Search or start new chat"></div>
       </div>
@@ -55,11 +116,39 @@
           <div class="ch-status" id="convo-status">click a message to inspect its payload</div>
         </div>
         <div class="spacer"></div>
+        <!-- Pin, analytics and clear are first-class actions on a chat, so they
+             are buttons rather than entries buried in the overflow menu. -->
+        <button class="icon-btn" id="convo-pin-btn" title="Pin chat" aria-pressed="false"><svg><use href="#p-pin"/></svg></button>
+        <button class="icon-btn" id="convo-stats-btn" title="Chat analytics"><svg><use href="#p-chart"/></svg></button>
+        <button class="icon-btn danger" id="convo-clear-btn" title="Clear chat"><svg><use href="#p-broom"/></svg></button>
         <button class="icon-btn" id="convo-search-btn" title="Search"><svg><use href="#p-search"/></svg></button>
         <button class="icon-btn" id="convo-menu-btn" title="Menu"><svg><use href="#p-menu"/></svg></button>
       </header>
       <div class="convo-tools hidden" id="convo-search"><input id="convo-search-input" placeholder="Search this conversation"><button type="button" id="close-convo-search" aria-label="Close search">×</button></div>
-      <div class="convo-menu hidden" id="convo-menu"><button type="button" id="menu-pin-chat">Pin chat</button><button type="button" id="menu-contact-info">Contact info</button></div>
+      <div class="convo-menu hidden" id="convo-menu">
+        <button type="button" id="menu-pin-chat">Pin chat</button>
+        <button type="button" id="menu-contact-info">Contact info</button>
+        <button type="button" id="menu-clear-chat" class="danger">Clear chat</button>
+      </div>
+      <!-- Traffic shape for this chat. Every number here is aggregated by the
+           server, so opening it on a huge conversation stays cheap. -->
+      <div class="stats-panel hidden" id="convo-stats">
+        <div class="stats-head">
+          <b>Chat analytics</b>
+          <span class="stats-sub" id="stats-range"></span>
+          <div class="spacer"></div>
+          <button type="button" class="icon-btn" id="stats-close" aria-label="Close analytics"><svg><use href="#p-close"/></svg></button>
+        </div>
+        <div class="stats-body" id="stats-body"></div>
+      </div>
+      <!-- A sandbox chat grows without bound; past a few hundred messages the
+           transcript is slow to page and impossible to read. -->
+      <div class="bloat-warn hidden" id="chat-bloat">
+        <svg><use href="#p-broom"/></svg>
+        <div class="bloat-main"><b id="bloat-title"></b><span id="bloat-sub"></span></div>
+        <button type="button" class="bloat-btn" id="bloat-clear">Clear chat</button>
+        <button type="button" class="bloat-x" id="bloat-dismiss" aria-label="Dismiss">×</button>
+      </div>
       <div class="messages" id="messages"></div>
       <div class="reply-composer hidden" id="reply-composer"><div><b>Replying to</b><span id="reply-text"></span></div><button type="button" id="cancel-reply" aria-label="Cancel reply">×</button></div>
       <footer class="composer">

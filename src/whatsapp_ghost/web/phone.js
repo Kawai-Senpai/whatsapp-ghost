@@ -103,6 +103,53 @@ function renderTemplateButtons(name, tpl){
   }).filter(Boolean);
 }
 
+/* ---- clickable links in message bodies ----
+   Bodies are escaped and injected as HTML, so a URL in a message arrived as
+   inert grey text: not highlighted, not clickable. This escapes first and only
+   then wraps the matched spans in anchors, so the text can never inject markup.
+   Matches http(s):// and bare www. URLs, plus e-mail addresses. */
+const LINK_PATTERN = /\b(?:https?:\/\/|www\.)[^\s<>"']+|\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/gi;
+
+/* Sentence punctuation sits against the end of a URL far more often than it is
+   part of one, and a closing bracket only belongs to the URL if it opened
+   inside it - "(see https://x.com/a)" must not swallow the final paren. */
+function trimUrlTail(token){
+  let end = token.length;
+  while(end > 0){
+    const char = token[end-1];
+    if('.,;:!?"\''.includes(char)){ end--; continue; }
+    if(char === ')' || char === ']' || char === '}'){
+      const open = {')':'(', ']':'[', '}':'{'}[char];
+      const body = token.slice(0, end);
+      const opens = body.split(open).length - 1, closes = body.split(char).length - 1;
+      if(closes > opens){ end--; continue; }
+    }
+    break;
+  }
+  return token.slice(0, end);
+}
+
+function linkify(value){
+  const text = String(value ?? '');
+  let html = '', cursor = 0;
+  LINK_PATTERN.lastIndex = 0;
+  for(let match; (match = LINK_PATTERN.exec(text)) !== null; ){
+    const token = trimUrlTail(match[0]);
+    if(!token){ LINK_PATTERN.lastIndex = match.index + match[0].length; continue; }
+    const isEmail = token.includes('@') && !/^https?:\/\//i.test(token) && !/^www\./i.test(token);
+    const href = isEmail ? 'mailto:'+token
+      : (/^https?:\/\//i.test(token) ? token : 'https://'+token);
+    html += esc(text.slice(cursor, match.index));
+    // stopPropagation: the bubble itself toggles the raw payload on click, so
+    // without it following a link also flips the JSON view open underneath.
+    html += `<a class="msg-link" href="${esc(href)}" target="_blank" rel="noopener noreferrer"`
+      + ` onclick="event.stopPropagation()">${esc(token)}</a>`;
+    cursor = match.index + token.length;
+    LINK_PATTERN.lastIndex = cursor;
+  }
+  return html + esc(text.slice(cursor));
+}
+
 /* Robustly extract a human-readable body from any stored payload shape. */
 function messageText(m){
   const p = m.payload || {};
@@ -133,11 +180,15 @@ function messageText(m){
   return {kind:'text', text:'['+t+']'};
 }
 
+/* Ticks describe the simulated customer's device, NOT your webhook endpoint.
+   A message can be double-ticked and still have reached no integration at all,
+   because a webhook with no subscriber is stored "unrouted" rather than sent.
+   The titles say so, and the hover diagnostics separate the two explicitly. */
 function ticks(status){
-  if(status==='read')      return '<span class="ticks read" title="Read">&#10003;&#10003;</span>';
-  if(status==='delivered') return '<span class="ticks" title="Delivered">&#10003;&#10003;</span>';
-  if(status==='sent')      return '<span class="ticks" title="Sent">&#10003;</span>';
-  if(status==='failed')    return '<span class="ticks" style="color:#e5484d">!</span>';
+  if(status==='read')      return '<span class="ticks read" title="Read by the simulated phone. Webhook delivery to your server is shown separately - hover this message.">&#10003;&#10003;</span>';
+  if(status==='delivered') return '<span class="ticks" title="Delivered to the simulated phone. Webhook delivery to your server is shown separately - hover this message.">&#10003;&#10003;</span>';
+  if(status==='sent')      return '<span class="ticks" title="Accepted by the sandbox, not yet delivered to the simulated phone.">&#10003;</span>';
+  if(status==='failed')    return '<span class="ticks" style="color:#e5484d" title="The sandbox could not deliver this message.">!</span>';
   return '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-1px"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>';
 }
 
@@ -211,6 +262,26 @@ function applyMeAvatar(me){
   if(!avatar) return;
   avatar.textContent = initials(me?.display_name || state.wa || 'Y');
   if(me?.color){ avatar.style.background = me.color; avatar.style.color = '#fff'; }
+  // Which mobile this tab is acting as. With several simulator tabs open it was
+  // otherwise only inferable from the avatar's two letters.
+  const name = $('#me-name'), number = $('#me-num');
+  if(name) name.textContent = me?.display_name || state.wa || 'Test customer';
+  if(number) number.textContent = state.wa ? '+'+state.wa : '';
+}
+
+/* A confirmation that does not steal focus the way alert() does. */
+function toast(message, bad=false){
+  let box = $('#p-toast');
+  if(!box){
+    box = document.createElement('div');
+    box.id = 'p-toast'; box.className = 'p-toast';
+    document.body.appendChild(box);
+  }
+  box.textContent = message;
+  box.classList.toggle('bad', bad);
+  box.classList.add('show');
+  clearTimeout(box._timer);
+  box._timer = setTimeout(()=>box.classList.remove('show'), bad ? 6000 : 2600);
 }
 
 function businessPhones(){
@@ -284,10 +355,14 @@ async function openChat(phoneId){
   $('#convo-name').textContent = p?.verified_name || 'Business';
   $('#convo-avatar').textContent = initials(p?.verified_name);
   $('#convo-status').textContent = p ? '+'+p.display_phone_number : '';
-  $('#menu-pin-chat').textContent=state.pinned.has(phoneId)?'Unpin chat':'Pin chat';
   document.querySelectorAll('.chat-row').forEach(r=>r.classList.remove('active'));
   document.querySelectorAll('.chat-row').forEach(r=>{ if(r.getAttribute('onclick')?.includes(phoneId)) r.classList.add('active'); });
   const url = new URL(location); url.searchParams.set('business', phoneId); url.searchParams.set('phone', state.wa); history.replaceState(null,'',url);
+  // The header buttons, the size warning and any open analytics all describe
+  // the chat that was open, so they follow the switch rather than lag it.
+  syncConvoActions();
+  renderBloatWarning();
+  closeStats();
   await loadMessages();
 }
 function closeChat(){ $('#app').classList.remove('chat-open'); }
@@ -413,6 +488,9 @@ function applyStatus(messageId, status){
   const node = document.querySelector(`.msg[data-message-id="${CSS.escape(messageId)}"] .ticks`);
   if(node) node.outerHTML = ticks(status);
   else renderMessages({scroll:'none'});
+  // The diagnostics for this message just changed - it gained a status hop and
+  // probably a webhook - so a cached copy would show the state before the hop.
+  invalidateDiagnostics(messageId);
 }
 
 function renderMessages(options){
@@ -465,13 +543,13 @@ function renderMessages(options){
       const header=val.headerMedia?.mtype==='image' && val.headerMedia.src
         ? `<img class="media-thumb tpl-header-media" src="${esc(val.headerMedia.src)}" alt="Approved arrival selfie">`
         : val.headerMedia ? `<span class="tpl-tag">${esc(val.headerMedia.label).toUpperCase()}</span>` : '';
-      bodyHtml = `${header}<span class="tpl-tag">TEMPLATE</span><span class="body">${esc(val.text || val.name)}</span>${buttons}`;
+      bodyHtml = `${header}<span class="tpl-tag">TEMPLATE</span><span class="body">${linkify(val.text || val.name)}</span>${buttons}`;
     } else if(val.kind==='media'){
       if(val.mtype==='image' && val.src) bodyHtml += `<img class="media-thumb" src="${esc(val.src)}" alt="">`;
       else bodyHtml += `<span class="tpl-tag">${esc(val.label).toUpperCase()}</span>`;
-      if(val.caption) bodyHtml += `<span class="body">${esc(val.caption)}</span>`;
+      if(val.caption) bodyHtml += `<span class="body">${linkify(val.caption)}</span>`;
     } else {
-      bodyHtml += `<span class="body">${esc(val.text)}</span>`;
+      bodyHtml += `<span class="body">${linkify(val.text)}</span>`;
     }
     const meta = `<span class="meta">${fmtTime(m.created_at)}${mine?' '+ticks(m.status):''}</span>`;
     const reactionHtml=(reactions.get(m.id)||[]).length?`<div class="reaction-badge">${esc((reactions.get(m.id)||[]).join(' '))}</div>`:'';
@@ -552,14 +630,415 @@ $('#emoji-picker').addEventListener('click',event=>{
   input.value=input.value.slice(0,start)+button.dataset.composeEmoji+input.value.slice(end);
   input.focus(); input.setSelectionRange(start+button.dataset.composeEmoji.length,start+button.dataset.composeEmoji.length);
 });
-$('#new-chat-btn').addEventListener('click',()=>{$('#search').focus();$('#search').select();});
-$('#pane-menu-btn').addEventListener('click',()=>{$('#search').focus();});
+/* ---- new chat / pane menu ----
+   Both buttons used to just focus the search box, which is indistinguishable
+   from them being broken. The chat button now picks a business number to talk
+   to, the way the real client picks a contact. */
+function closePanePopovers(){
+  $('#new-chat-menu').classList.add('hidden');
+  $('#pane-menu').classList.add('hidden');
+}
+
+function renderNewChatMenu(){
+  const list = $('#new-chat-list');
+  const phones = businessPhones();
+  if(!phones.length){
+    list.innerHTML = '<div class="pp-empty">No business numbers registered yet. Add a sender in the console.</div>';
+    return;
+  }
+  list.innerHTML = phones.map(p=>`
+    <button type="button" data-start-chat="${esc(p.id)}">
+      <span class="pp-avatar">${esc(initials(p.verified_name))}</span>
+      <span class="pp-main">
+        <span class="pp-name">${esc(p.verified_name)}</span>
+        <span class="pp-sub">+${esc(p.display_phone_number)}</span>
+      </span>
+    </button>`).join('');
+}
+
+$('#new-chat-btn').addEventListener('click', event=>{
+  event.stopPropagation();
+  const menu = $('#new-chat-menu'), opening = menu.classList.contains('hidden');
+  closePanePopovers();
+  if(opening){ renderNewChatMenu(); menu.classList.remove('hidden'); }
+});
+$('#new-chat-list').addEventListener('click', event=>{
+  const button = event.target.closest('[data-start-chat]');
+  if(!button) return;
+  closePanePopovers();
+  openChat(button.dataset.startChat);
+});
+$('#pane-menu-btn').addEventListener('click', event=>{
+  event.stopPropagation();
+  const menu = $('#pane-menu'), opening = menu.classList.contains('hidden');
+  closePanePopovers();
+  if(opening) menu.classList.remove('hidden');
+});
+$('#menu-add-number').addEventListener('click', ()=>{ closePanePopovers(); openMobileSheet(null); });
+$('#menu-switch-number').addEventListener('click', ()=>{
+  closePanePopovers();
+  $('#mobile-search').focus();
+  $('#inbox').classList.remove('collapsed');
+  $('#inbox-toggle').textContent = '‹';
+});
+$('#menu-clear-every-chat').addEventListener('click', ()=>{ closePanePopovers(); clearChat(null); });
+document.addEventListener('click', event=>{
+  if(!event.target.closest('.pane-popover') && !event.target.closest('#new-chat-btn')
+     && !event.target.closest('#pane-menu-btn')) closePanePopovers();
+});
 $('#convo-search-btn').addEventListener('click',()=>{$('#convo-search').classList.toggle('hidden');$('#convo-search-input').focus();});
 $('#close-convo-search').addEventListener('click',()=>{$('#convo-search-input').value='';$('#convo-search').classList.add('hidden');loadMessages();});
 $('#convo-search-input').addEventListener('input',()=>renderMessages({scroll:'none'}));
 $('#convo-menu-btn').addEventListener('click',event=>{event.stopPropagation();$('#convo-menu').classList.toggle('hidden');});
 $('#menu-pin-chat').addEventListener('click',async ()=>{$('#convo-menu').classList.add('hidden');await togglePin(state.activePhone);renderChatList();});
 $('#menu-contact-info').addEventListener('click',()=>{const phone=businessPhones().find(item=>item.id===state.activePhone);alert(phone?`${phone.verified_name}\n+${phone.display_phone_number}\n${phone.business_name}`:'Contact unavailable');});
+
+/* Erase a transcript. phoneId null clears every chat this mobile has.
+   The conversation itself survives, so the 24-hour window and the pin do too:
+   clearing a chat removes the messages, not the contact. */
+async function clearChat(phoneId){
+  if(!state.wa){ toast('No test number selected', true); return; }
+  const label = phoneId ? `the chat with ${businessName(phoneId)}` : 'every chat on this number';
+  if(!confirm(`Clear ${label}?\nThe messages are deleted for good. The chat itself stays.`)) return;
+  const query = phoneId ? '?phone_number_id='+encodeURIComponent(phoneId) : '';
+  try{
+    const d = await req('/_sandbox/phones/'+encodeURIComponent(state.wa)+'/messages'+query, {method:'DELETE'});
+    toast(d.deleted ? `Cleared ${d.deleted} message${d.deleted===1?'':'s'}` : 'Nothing to clear');
+    await applyChatCleared(phoneId);
+  }catch(e){ toast(e.message || 'Could not clear this chat', true); }
+}
+
+/* Bring this tab in line with a clear, whether it did it or another tab did. */
+async function applyChatCleared(phoneId){
+  if(!phoneId || phoneId === state.activePhone){
+    state.messages.clear();
+    state.hasMore = false; state.nextBefore = null;
+    renderMessages({scroll:'bottom'});
+  }
+  // Previews and badges are derived from the messages that just went away.
+  state.feed = state.feed.filter(item => item.wa !== state.wa || (phoneId && item.phoneId !== phoneId));
+  renderFeed();
+  await loadUnread();
+  renderMobiles();
+  renderChatList();
+}
+
+$('#menu-clear-chat').addEventListener('click', ()=>{
+  $('#convo-menu').classList.add('hidden');
+  clearChat(state.activePhone);
+});
+$('#convo-clear-btn').addEventListener('click', ()=>clearChat(state.activePhone));
+$('#convo-pin-btn').addEventListener('click', async ()=>{
+  await togglePin(state.activePhone);
+  syncConvoActions();
+});
+
+/* Keep the header buttons showing the chat's actual state. */
+function syncConvoActions(){
+  const pinned = state.pinned.has(state.activePhone);
+  const button = $('#convo-pin-btn');
+  if(button){
+    button.classList.toggle('on', pinned);
+    button.setAttribute('aria-pressed', String(pinned));
+    button.title = pinned ? 'Unpin chat' : 'Pin chat';
+  }
+  const entry = $('#menu-pin-chat');
+  if(entry) entry.textContent = pinned ? 'Unpin chat' : 'Pin chat';
+}
+
+/* ---- per-chat analytics ----
+   "When did this conversation actually happen" is not answerable by scrolling a
+   thousand bubbles. The server aggregates, so this stays instant at any size. */
+const DAY_START = 6, DAY_END = 18;   // local hours counted as daylight
+
+function hourLabel(hour){
+  const suffix = hour < 12 ? 'am' : 'pm';
+  const value = hour % 12 === 0 ? 12 : hour % 12;
+  return value + suffix;
+}
+
+function statBar(count, peak){
+  // A non-zero bucket always gets a visible sliver, or a quiet hour beside a
+  // busy one reads as no data rather than as little data.
+  return count ? Math.max(4, Math.round((count / peak) * 100)) : 0;
+}
+
+function renderHourHistogram(byHour){
+  const peak = Math.max(...byHour, 1);
+  const bars = byHour.map((count, hour)=>{
+    const night = hour < DAY_START || hour >= DAY_END;
+    return `<div class="hb ${night?'night':'day'}" style="--h:${statBar(count,peak)}%"
+      title="${hourLabel(hour)} · ${count} message${count===1?'':'s'}"><span></span></div>`;
+  }).join('');
+  return `
+    <div class="stats-card">
+      <div class="stats-card-head"><b>By hour of day</b>
+        <span class="stats-legend"><i class="sw day"></i>day<i class="sw night"></i>night</span></div>
+      <div class="hbars">${bars}</div>
+      <div class="hbars-axis"><span>12am</span><span>6am</span><span>12pm</span><span>6pm</span><span>11pm</span></div>
+    </div>`;
+}
+
+function renderDayTimeline(byDay){
+  if(!byDay.length) return '';
+  const peak = Math.max(...byDay.map(d=>d.total), 1);
+  // Newest last so the row reads left to right as time passing, and capped so
+  // a year-long chat does not render 365 unreadable slivers.
+  const shown = byDay.slice(-60);
+  const bars = shown.map(day=>{
+    const label = new Date(day.day + 'T00:00:00').toLocaleDateString([], {month:'short', day:'numeric'});
+    return `<div class="tl-col" title="${esc(label)} · ${day.total} message${day.total===1?'':'s'} (${day.inbound} sent, ${day.outbound} received)">
+      <div class="tl-stack" style="--h:${statBar(day.total,peak)}%">
+        <span class="tl-in" style="flex:${day.inbound||0}"></span>
+        <span class="tl-out" style="flex:${day.outbound||0}"></span>
+      </div></div>`;
+  }).join('');
+  const first = new Date(shown[0].day + 'T00:00:00').toLocaleDateString([], {month:'short', day:'numeric'});
+  const last = new Date(shown[shown.length-1].day + 'T00:00:00').toLocaleDateString([], {month:'short', day:'numeric'});
+  return `
+    <div class="stats-card">
+      <div class="stats-card-head"><b>Messages per day</b>
+        <span class="stats-legend"><i class="sw in"></i>you<i class="sw out"></i>business</span></div>
+      <div class="timeline">${bars}</div>
+      <div class="hbars-axis"><span>${esc(first)}</span><span>${esc(last)}</span></div>
+      ${byDay.length > shown.length ? `<div class="stats-note">Showing the most recent ${shown.length} of ${byDay.length} days.</div>` : ''}
+    </div>`;
+}
+
+function renderTypeBreakdown(byType, total){
+  const entries = Object.entries(byType||{}).sort((a,b)=>b[1]-a[1]);
+  if(!entries.length) return '';
+  return `
+    <div class="stats-card">
+      <div class="stats-card-head"><b>By message type</b></div>
+      <div class="stats-rows">${entries.map(([type,count])=>`
+        <div class="stats-row">
+          <span class="stats-row-label">${esc(type)}</span>
+          <span class="stats-meter"><i style="width:${total?Math.round(count/total*100):0}%"></i></span>
+          <span class="stats-row-value">${count}</span>
+        </div>`).join('')}</div>
+    </div>`;
+}
+
+function renderStats(data){
+  const body = $('#stats-body');
+  if(!data.total){
+    body.innerHTML = '<div class="stats-empty">No messages in this chat yet.</div>';
+    $('#stats-range').textContent = '';
+    return;
+  }
+  const first = new Date(data.first_at), last = new Date(data.last_at);
+  const peakHour = data.by_hour.indexOf(Math.max(...data.by_hour));
+  const nightTotal = data.by_hour.reduce((sum,count,hour)=>
+    sum + ((hour < DAY_START || hour >= DAY_END) ? count : 0), 0);
+  const days = Math.max(1, data.by_day.length);
+  const fmtDate = d => d.toLocaleDateString([], {month:'short', day:'numeric'}) + ', ' + fmtTime(d);
+  $('#stats-range').textContent = fmtDate(first) + ' – ' + fmtDate(last);
+  body.innerHTML = `
+    <div class="stats-tiles">
+      <div class="stats-tile"><small>Messages</small><strong>${data.total}</strong></div>
+      <div class="stats-tile"><small>You sent</small><strong>${data.inbound}</strong></div>
+      <div class="stats-tile"><small>Received</small><strong>${data.outbound}</strong></div>
+      <div class="stats-tile"><small>Busiest hour</small><strong>${esc(hourLabel(peakHour))}</strong></div>
+      <div class="stats-tile"><small>Per active day</small><strong>${(data.total/days).toFixed(1)}</strong></div>
+      <div class="stats-tile"><small>Overnight</small><strong>${Math.round(nightTotal/data.total*100)}%</strong></div>
+    </div>
+    ${renderHourHistogram(data.by_hour)}
+    ${renderDayTimeline(data.by_day)}
+    ${renderTypeBreakdown(data.by_type, data.total)}`;
+}
+
+async function openStats(){
+  if(!state.wa || !state.activePhone) return;
+  const panel = $('#convo-stats');
+  panel.classList.remove('hidden');
+  $('#stats-body').innerHTML = '<div class="stats-empty"><span class="spinner"></span> Crunching this chat…</div>';
+  try{
+    // getTimezoneOffset() counts minutes behind UTC, so it is negated to become
+    // "minutes to add to UTC", which is what the endpoint buckets with.
+    const offset = -new Date().getTimezoneOffset();
+    const data = await req('/_sandbox/phones/'+encodeURIComponent(state.wa)+'/analytics'
+      + '?phone_number_id=' + encodeURIComponent(state.activePhone)
+      + '&tz_offset=' + offset);
+    renderStats(data);
+  }catch(e){
+    $('#stats-body').innerHTML = `<div class="stats-empty">${esc(e.message||'Could not load analytics')}</div>`;
+  }
+}
+
+function closeStats(){ $('#convo-stats').classList.add('hidden'); }
+
+$('#convo-stats-btn').addEventListener('click', ()=>{
+  const panel = $('#convo-stats');
+  if(panel.classList.contains('hidden')) openStats(); else closeStats();
+});
+$('#stats-close').addEventListener('click', closeStats);
+
+/* ---- hover diagnostics ----
+   "It says sent, so why did my server never get it?" used to mean opening the
+   webhook page and searching for the id by hand. Hovering a bubble now answers
+   it in place: the status hops with their delays, and every webhook the message
+   produced with its HTTP result. */
+const diagnosticsCache = new Map();
+let diagnosticsTimer = null, diagnosticsFor = null;
+
+/* Drop a cached diagnostic and repaint if the popover is currently showing it. */
+function invalidateDiagnostics(messageId){
+  diagnosticsCache.delete(messageId);
+  if(diagnosticsFor !== messageId) return;
+  const bubble = document.querySelector(`.msg[data-message-id="${CSS.escape(messageId)}"]`);
+  if(bubble) showDiagnostics(bubble);
+}
+
+function relTime(ms){
+  if(ms === null || ms === undefined) return '—';
+  if(ms < 1000) return Math.round(ms)+'ms';
+  if(ms < 60000) return (ms/1000).toFixed(ms < 10000 ? 2 : 1)+'s';
+  return Math.round(ms/60000)+'m';
+}
+
+const VERDICTS = {
+  delivered:   {tone:'ok',   text:'Webhooks delivered'},
+  pending:     {tone:'warn', text:'Webhook still pending'},
+  unrouted:    {tone:'warn', text:'No subscriber — event stored, never sent'},
+  webhook_failed:{tone:'bad', text:'Webhook delivery failed'},
+  no_webhook:  {tone:'warn', text:'No webhook produced for this message'},
+};
+
+function diagnosticsHtml(data){
+  const verdict = VERDICTS[data.verdict] || {tone:'warn', text:data.verdict};
+  // The question this answers: "it shows two ticks, so why did my server never
+  // see it?" Ticks are the simulated phone; webhooks are your integration. They
+  // are independent, and only the mismatch is worth calling out.
+  const ticked = ['delivered','read'].includes(data.status);
+  const note = (ticked && data.verdict !== 'delivered')
+    ? `<div class="dbg-note">The ticks mean the simulated phone received this.
+       They say nothing about your integration: this message's webhook was
+       <b>${esc(data.verdict === 'no_webhook' ? 'never queued' : data.verdict)}</b>,
+       so your server was not told.</div>`
+    : '';
+  const hops = data.events.length
+    ? data.events.map(event=>`<div class="dbg-hop">
+        <span class="dbg-dot ${esc(event.status)}"></span>
+        <span class="dbg-hop-name">${esc(event.status)}</span>
+        <span class="dbg-hop-delay">+${esc(relTime(event.delay_ms))}</span>
+      </div>`).join('')
+    : '<div class="dbg-none">No status transitions recorded.</div>';
+  const hooks = data.deliveries.length
+    ? data.deliveries.map(hook=>{
+        const code = hook.last_status_code ? 'HTTP '+hook.last_status_code : (hook.status==='unrouted' ? 'not sent' : '—');
+        return `<div class="dbg-hook">
+          <div class="dbg-hook-top">
+            <span class="dbg-pill ${esc(hook.status)}">${esc(hook.status)}</span>
+            <span class="dbg-hook-event">${esc(hook.event_type||'event')}</span>
+            <span class="dbg-hook-code">${esc(code)}</span>
+          </div>
+          <div class="dbg-hook-meta">
+            queued +${esc(relTime(hook.queued_delay_ms))}
+            ${hook.delivered_at ? ' · delivered +'+esc(relTime(hook.delivered_delay_ms)) : ''}
+            ${hook.attempt_count > 1 ? ' · '+hook.attempt_count+' attempts' : ''}
+          </div>
+          ${hook.destination_url ? `<div class="dbg-hook-url">${esc(hook.destination_url)}</div>` : ''}
+          ${hook.last_error ? `<div class="dbg-error">${esc(hook.last_error)}</div>` : ''}
+        </div>`;
+      }).join('')
+    : '<div class="dbg-none">Nothing was queued for delivery.</div>';
+  return `
+    <div class="dbg-head">
+      <span class="dbg-verdict ${esc(verdict.tone)}">${esc(verdict.text)}</span>
+      ${note}
+    </div>
+    <div class="dbg-grid">
+      <span>Status</span><b>${esc(data.status)}${data.failure_code?` (code ${esc(data.failure_code)})`:''}</b>
+      <span>Type</span><b>${esc(data.message_type)}</b>
+      <span>Direction</span><b>${data.direction==='inbound'?'you → business':'business → you'}</b>
+      <span>Created</span><b>${esc(new Date(data.created_at).toLocaleTimeString())}</b>
+    </div>
+    <div class="dbg-section">Status timeline</div>
+    <div class="dbg-hops">${hops}</div>
+    <div class="dbg-section">Webhooks</div>
+    <div class="dbg-hooks">${hooks}</div>
+    <div class="dbg-foot">${esc(data.id)}</div>`;
+}
+
+function diagnosticsBox(){
+  let box = $('#msg-debug');
+  if(!box){
+    box = document.createElement('div');
+    box.id = 'msg-debug'; box.className = 'msg-debug';
+    // Hovering onto the popover itself must not dismiss it, or a scrollable
+    // failure message would be unreadable.
+    box.addEventListener('mouseenter', ()=>clearTimeout(box._hide));
+    box.addEventListener('mouseleave', hideDiagnostics);
+    document.body.appendChild(box);
+  }
+  return box;
+}
+
+function placeDiagnostics(box, bubble){
+  const rect = bubble.getBoundingClientRect();
+  const width = box.offsetWidth, height = box.offsetHeight;
+  // Prefer above the bubble; flip below when there is no room, and keep the
+  // whole card inside the viewport either way.
+  let top = rect.top - height - 8;
+  if(top < 8) top = Math.min(rect.bottom + 8, window.innerHeight - height - 8);
+  let left = rect.left + rect.width/2 - width/2;
+  left = Math.max(8, Math.min(left, window.innerWidth - width - 8));
+  box.style.top = top+'px';
+  box.style.left = left+'px';
+}
+
+async function showDiagnostics(bubble){
+  const id = bubble.dataset.messageId;
+  if(!id) return;
+  diagnosticsFor = id;
+  const box = diagnosticsBox();
+  clearTimeout(box._hide);
+  if(!diagnosticsCache.has(id)){
+    box.innerHTML = '<div class="dbg-loading"><span class="spinner"></span> Loading diagnostics…</div>';
+    box.classList.add('show');
+    placeDiagnostics(box, bubble);
+    try{
+      diagnosticsCache.set(id, await req('/_sandbox/messages/'+encodeURIComponent(id)+'/diagnostics'));
+    }catch(e){
+      // Cached as an error so a flapping hover does not re-request forever.
+      diagnosticsCache.set(id, {error:e.message||'Could not load diagnostics'});
+    }
+  }
+  if(diagnosticsFor !== id) return;   // pointer moved on while we fetched
+  const data = diagnosticsCache.get(id);
+  box.innerHTML = data.error
+    ? `<div class="dbg-loading">${esc(data.error)}</div>`
+    : diagnosticsHtml(data);
+  box.classList.add('show');
+  placeDiagnostics(box, bubble);
+}
+
+function hideDiagnostics(){
+  const box = $('#msg-debug');
+  if(!box) return;
+  diagnosticsFor = null;
+  box._hide = setTimeout(()=>box.classList.remove('show'), 120);
+}
+
+$('#messages').addEventListener('mouseover', event=>{
+  const bubble = event.target.closest('.msg[data-message-id]');
+  if(!bubble) return;
+  if(bubble.dataset.messageId === diagnosticsFor) return;
+  clearTimeout(diagnosticsTimer);
+  // A short delay so sweeping the pointer across a transcript does not fire a
+  // request per bubble it crosses.
+  diagnosticsTimer = setTimeout(()=>showDiagnostics(bubble), 260);
+});
+$('#messages').addEventListener('mouseout', event=>{
+  const bubble = event.target.closest('.msg[data-message-id]');
+  if(!bubble) return;
+  if(event.relatedTarget && bubble.contains(event.relatedTarget)) return;
+  clearTimeout(diagnosticsTimer);
+  hideDiagnostics();
+});
+// A status change invalidates what the popover last showed for that message.
+$('#messages').addEventListener('scroll', ()=>{ clearTimeout(diagnosticsTimer); hideDiagnostics(); });
 document.addEventListener('click',event=>{if(!event.target.closest('#convo-menu')&&!event.target.closest('#convo-menu-btn'))$('#convo-menu').classList.add('hidden');});
 document.addEventListener('click',event=>{if(!event.target.closest('.msg-action-menu')&&!event.target.closest('.msg-action-toggle'))document.querySelectorAll('.msg.actions-open').forEach(item=>item.classList.remove('actions-open'));});
 
@@ -600,35 +1079,196 @@ async function loadUnread(){
     }
     state.unread = totals;
     state.chatUnread = perChat;
-    const activity = new Map();
-    for(const row of (d.activity||[])) activity.set(row.wa_id+'|'+row.phone_number_id, row.last_at);
+    const activity = new Map(), perChatTotals = new Map();
+    for(const row of (d.activity||[])){
+      activity.set(row.wa_id+'|'+row.phone_number_id, row.last_at);
+      // The endpoint already counts every message per chat for its ordering,
+      // so the size warning below is free rather than another query.
+      perChatTotals.set(row.wa_id+'|'+row.phone_number_id, row.total||0);
+    }
     state.chatActivity = activity;
+    state.chatTotals = perChatTotals;
+    renderBloatWarning();
   }catch{ /* leave the previous counts rather than blanking every badge */ }
 }
 
 function unreadFor(wa){ return state.unread.get(wa) || 0; }
 
+/* ---- oversized chat warning ----
+   Past this many messages the transcript is slow to page through and the
+   histogram is the only readable view of it, so clearing is offered in place
+   rather than left to be discovered in a menu. */
+const BLOAT_WARN_AT = 400;
+const BLOAT_SEVERE_AT = 2000;
+const bloatDismissed = new Set();
+
+function chatTotal(phoneId){ return (state.chatTotals && state.chatTotals.get(chatKey(phoneId))) || 0; }
+
+function renderBloatWarning(){
+  const banner = $('#chat-bloat');
+  if(!banner) return;
+  const phoneId = state.activePhone;
+  const total = phoneId ? chatTotal(phoneId) : 0;
+  if(!phoneId || total < BLOAT_WARN_AT || bloatDismissed.has(chatKey(phoneId))){
+    banner.classList.add('hidden');
+    return;
+  }
+  const severe = total >= BLOAT_SEVERE_AT;
+  banner.classList.toggle('severe', severe);
+  $('#bloat-title').textContent = `${total.toLocaleString()} messages in this chat`;
+  $('#bloat-sub').textContent = severe
+    ? 'Paging through this is slow. Clearing it keeps the number and its 24-hour window.'
+    : 'Getting long. Clearing keeps the number and its 24-hour window.';
+  banner.classList.remove('hidden');
+}
+
+$('#bloat-clear').addEventListener('click', ()=>clearChat(state.activePhone));
+$('#bloat-dismiss').addEventListener('click', ()=>{
+  // Per chat, for this tab only: a reload is a fair place to be reminded again.
+  if(state.activePhone) bloatDismissed.add(chatKey(state.activePhone));
+  $('#chat-bloat').classList.add('hidden');
+});
+
+function mobileMatches(user, query){
+  if(!query) return true;
+  return (String(user.display_name||'') + ' ' + user.wa_id).toLowerCase().includes(query);
+}
+
 function renderMobiles(){
   const box = $('#mobiles');
   if(!box) return;
-  if(!state.users.length){ box.innerHTML = '<div class="feed-empty">No mobiles yet.</div>'; return; }
-  // Most unread first, so whatever needs attention is always at the top.
-  const ordered = [...state.users].sort((a,b)=>
-    unreadFor(b.wa_id)-unreadFor(a.wa_id) || String(a.display_name||'').localeCompare(String(b.display_name||'')));
+  if(!state.users.length){
+    box.innerHTML = '<div class="mobiles-empty">No test numbers yet.<br>Use + to add one.</div>';
+    return;
+  }
+  const query = (state.mobileFilter || '').trim().toLowerCase();
+  // Favourites first, then whatever is waiting on a reply, then by name. A
+  // starred number outranks unread deliberately: once autocreate has filled the
+  // roster, the handful you actually test with must stay at the top whether or
+  // not a stranger's chat happens to be unread right now.
+  const ordered = state.users.filter(u => mobileMatches(u, query)).sort((a,b)=>
+    Number(!!b.starred)-Number(!!a.starred)
+    || unreadFor(b.wa_id)-unreadFor(a.wa_id)
+    || String(a.display_name||'').localeCompare(String(b.display_name||'')));
+  if(!ordered.length){
+    box.innerHTML = `<div class="mobiles-empty">No number matches “${esc(query)}”.</div>`;
+    return;
+  }
   box.innerHTML = ordered.map(u=>{
     const count = unreadFor(u.wa_id);
     const mine = u.wa_id===state.wa;
-    return `<div class="mobile-row ${count?'unread':''} ${mine?'current':''}" data-open-wa="${esc(u.wa_id)}"
+    const starred = !!u.starred;
+    return `<div class="mobile-row ${count?'unread':''} ${mine?'current':''} ${starred?'starred':''}" data-open-wa="${esc(u.wa_id)}"
         title="${esc(u.display_name||u.wa_id)} · +${esc(u.wa_id)}">
       <div class="mobile-av" style="background:${esc(u.color||'#6a7175')}">${esc(initials(u.display_name||u.wa_id))}</div>
       <div class="mobile-main">
         <div class="mobile-name">${esc(u.display_name||u.wa_id)}${u.auto_created?'<span class="tag-auto">auto</span>':''}</div>
         <div class="mobile-num">+${esc(u.wa_id)}${mine?' · this tab':''}</div>
       </div>
+      <button type="button" class="mobile-star ${starred?'on':''}" data-star-wa="${esc(u.wa_id)}"
+              aria-pressed="${starred}" title="${starred?'Remove from favourites':'Pin to favourites'}"
+              aria-label="${starred?'Remove from favourites':'Pin to favourites'}"><svg><use href="#p-star"/></svg></button>
+      <button type="button" class="mobile-edit" data-edit-wa="${esc(u.wa_id)}"
+              title="Edit ${esc(u.display_name||u.wa_id)}" aria-label="Edit ${esc(u.display_name||u.wa_id)}"><svg><use href="#p-edit"/></svg></button>
       ${count?`<span class="badge-unread">${count>99?'99+':count}</span>`:''}
     </div>`;
   }).join('');
 }
+
+/* ---- add / edit a test number, without a trip to the console ---- */
+// null means "creating"; a wa_id means "editing that customer".
+let sheetEditing = null;
+
+function openMobileSheet(wa){
+  const user = wa ? state.users.find(u=>u.wa_id===wa) : null;
+  sheetEditing = user ? user.wa_id : null;
+  $('#mobile-sheet-title').textContent = user ? 'Edit test number' : 'Add a test number';
+  $('#mobile-wa').value = user ? user.wa_id : '';
+  // The wa_id is the primary key and the socket address, so renaming a number
+  // would be a delete plus a create, not an edit. Editing changes the label.
+  $('#mobile-wa').readOnly = !!user;
+  $('#mobile-name').value = user ? (user.display_name||'') : '';
+  $('#mobile-color').value = /^#[0-9a-fA-F]{6}$/.test(user?.color||'') ? user.color : '#25D366';
+  $('#mobile-delete').hidden = !user;
+  $('#mobile-error').hidden = true;
+  $('#mobile-sheet').hidden = false;
+  setTimeout(()=>$(user ? '#mobile-name' : '#mobile-wa').focus(), 0);
+}
+
+function closeMobileSheet(){ $('#mobile-sheet').hidden = true; sheetEditing = null; }
+
+function sheetError(message){
+  const box = $('#mobile-error');
+  box.textContent = message; box.hidden = false;
+}
+
+async function saveMobileSheet(event){
+  event.preventDefault();
+  const digits = $('#mobile-wa').value.replace(/[^\d]/g,'');
+  const name = $('#mobile-name').value.trim();
+  const color = $('#mobile-color').value;
+  if(!sheetEditing && digits.length < 6){ sheetError('Enter a phone number in full international form, digits only.'); return; }
+  const save = $('#mobile-save');
+  save.disabled = true;
+  try{
+    if(sheetEditing){
+      await req('/_sandbox/phones/'+encodeURIComponent(sheetEditing), {
+        method:'PATCH', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({display_name:name || undefined, color}),
+      });
+      toast('Number updated');
+    }else{
+      await req('/_sandbox/phones', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({wa_id:digits, display_name:name || undefined, color}),
+      });
+      toast('Number added');
+    }
+    closeMobileSheet();
+    // The observer announces the change too, but this tab should not wait on a
+    // round trip through the socket to show what it just did.
+    await refreshRoster();
+  }catch(e){ sheetError(e.message || 'Could not save this number'); }
+  finally{ save.disabled = false; }
+}
+
+async function deleteMobileFromSheet(){
+  if(!sheetEditing) return;
+  const user = state.users.find(u=>u.wa_id===sheetEditing);
+  const label = user ? (user.display_name||user.wa_id) : sheetEditing;
+  if(!confirm(`Delete ${label} (+${sheetEditing})?\nThis removes the number and its whole chat history.`)) return;
+  const target = sheetEditing;
+  try{
+    await req('/_sandbox/phones/'+encodeURIComponent(target), {method:'DELETE'});
+    closeMobileSheet();
+    toast('Number deleted');
+    // Deleting the mobile this tab is acting as leaves nothing to act as, so
+    // the simulator goes back to the console rather than to a dead socket.
+    if(target === state.wa){ location.href = '/console#simulator'; return; }
+    await refreshRoster();
+  }catch(e){ sheetError(e.message || 'Could not delete this number'); }
+}
+
+async function refreshRoster(){
+  try{
+    const users = await req('/_sandbox/phones');
+    state.users = users.data;
+  }catch{ return; }
+  await loadUnread();
+  renderMobiles();
+  renderChatList();
+  renderFeed();
+  applyMeAvatar(state.users.find(u=>u.wa_id===state.wa));
+}
+
+$('#mobile-add').addEventListener('click', ()=>openMobileSheet(null));
+$('#mobile-form').addEventListener('submit', saveMobileSheet);
+$('#mobile-cancel').addEventListener('click', closeMobileSheet);
+$('#mobile-close').addEventListener('click', closeMobileSheet);
+$('#mobile-delete').addEventListener('click', deleteMobileFromSheet);
+$('#mobile-sheet').addEventListener('click', event=>{ if(event.target.id==='mobile-sheet') closeMobileSheet(); });
+$('#mobile-search').addEventListener('input', event=>{ state.mobileFilter = event.target.value; renderMobiles(); });
+document.addEventListener('keydown', event=>{ if(event.key==='Escape' && !$('#mobile-sheet').hidden) closeMobileSheet(); });
 
 function businessName(phoneId){
   const p = businessPhones().find(x=>x.id===phoneId);
@@ -709,7 +1349,35 @@ function openMobile(wa, phoneId){
   window.open(url.toString(), 'ghost-phone-'+wa);
 }
 
+/* Favourite a number. Stored on the customer rather than in localStorage, so
+   the same numbers sit at the top in every tab and survive a reload. */
+async function toggleStar(wa){
+  const user = state.users.find(u => u.wa_id === wa);
+  if(!user) return;
+  const next = !user.starred;
+  // Optimistic: the row redraws immediately and rolls back only if the write
+  // fails, because a star that lags a round trip feels broken.
+  user.starred = next;
+  renderMobiles();
+  try{
+    await req('/_sandbox/phones/'+encodeURIComponent(wa), {
+      method:'PATCH', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({starred: next}),
+    });
+  }catch(e){
+    user.starred = !next;
+    renderMobiles();
+    toast('Could not update favourites', true);
+  }
+}
+
 document.addEventListener('click', event=>{
+  // These buttons sit inside the row, so they have to be claimed before the
+  // row's own handler turns the click into "open this mobile in a tab".
+  const star = event.target.closest('[data-star-wa]');
+  if(star){ event.stopPropagation(); toggleStar(star.dataset.starWa); return; }
+  const edit = event.target.closest('[data-edit-wa]');
+  if(edit){ event.stopPropagation(); openMobileSheet(edit.dataset.editWa); return; }
   const row = event.target.closest('[data-open-wa]');
   if(!row) return;
   openMobile(row.dataset.openWa, row.dataset.openBusiness || '');
@@ -782,6 +1450,17 @@ async function handleObserverEvent(data){
     renderChatList();
     return;
   }
+  if(data.event==='chat_cleared'){
+    // Another tab (or another mobile) cleared something. Only the rows that
+    // belonged to that mobile are dropped from this tab's feed.
+    state.feed = state.feed.filter(item => item.wa !== data.wa_id
+      || (data.phone_number_id && item.phoneId !== data.phone_number_id));
+    renderFeed();
+    await loadUnread();
+    renderMobiles();
+    renderChatList();
+    return;
+  }
   if(data.event==='status' || data.event==='read'){
     await loadUnread();
     renderMobiles();
@@ -828,7 +1507,15 @@ function connectSocket(){
       return;
     }
     if(data.event==='status' && data.message_id){ applyStatus(data.message_id, data.status); return; }
-    if(data.event==='read'){ loadMessages(); }
+    // This mobile's transcript was cleared, possibly from one of its other
+    // open tabs, so the open conversation has to drop what it is showing.
+    if(data.event==='chat_cleared'){ applyChatCleared(data.phone_number_id || null); return; }
+    if(data.event==='read'){
+      // Read receipts move every outstanding message, so every cached
+      // diagnostic for this chat describes the state before the receipt.
+      diagnosticsCache.clear();
+      loadMessages();
+    }
   };
   state.socket.onclose = ()=>{ if(state.wa===wa) state.reconnect=setTimeout(connectSocket,1500); };
 }

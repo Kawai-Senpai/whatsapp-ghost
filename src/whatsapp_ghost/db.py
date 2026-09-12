@@ -29,7 +29,8 @@ CREATE TABLE IF NOT EXISTS phone_numbers (
 CREATE TABLE IF NOT EXISTS simulated_users (
   wa_id TEXT PRIMARY KEY, display_name TEXT NOT NULL, online INTEGER NOT NULL DEFAULT 1,
   blocked INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL,
-  color TEXT, auto_created INTEGER NOT NULL DEFAULT 0
+  color TEXT, auto_created INTEGER NOT NULL DEFAULT 0,
+  starred INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS conversations (
   id TEXT PRIMARY KEY, phone_number_id TEXT NOT NULL, user_wa_id TEXT NOT NULL,
@@ -66,7 +67,8 @@ CREATE TABLE IF NOT EXISTS webhook_deliveries (
   id TEXT PRIMARY KEY, event_type TEXT NOT NULL, destination_url TEXT,
   request_body BLOB NOT NULL, signature TEXT NOT NULL, status TEXT NOT NULL,
   attempt_count INTEGER NOT NULL DEFAULT 0, last_status_code INTEGER,
-  last_response_body BLOB, last_error TEXT, created_at TEXT NOT NULL, delivered_at TEXT
+  last_response_body BLOB, last_error TEXT, created_at TEXT NOT NULL, delivered_at TEXT,
+  message_id TEXT
 );
 CREATE TABLE IF NOT EXISTS webhook_attempts (
   id TEXT PRIMARY KEY, delivery_id TEXT NOT NULL, attempt_number INTEGER NOT NULL,
@@ -77,6 +79,23 @@ CREATE TABLE IF NOT EXISTS clock_state (
   singleton INTEGER PRIMARY KEY CHECK(singleton=1), frozen_at TEXT
 );
 INSERT OR IGNORE INTO clock_state(singleton, frozen_at) VALUES(1, NULL);
+
+-- Every list endpoint in the console orders by created_at DESC and joins on a
+-- foreign key, and none of those columns were indexed: with a few thousand
+-- messages and deliveries SQLite fell back to a full scan plus a temp B-tree
+-- sort for each one, which is what made /console take minutes to paint.
+-- IF NOT EXISTS means an existing database picks these up on the next start.
+CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_messages_sender ON messages(sender_id);
+CREATE INDEX IF NOT EXISTS idx_messages_recipient ON messages(recipient_id);
+CREATE INDEX IF NOT EXISTS idx_messages_unread ON messages(direction, status);
+CREATE INDEX IF NOT EXISTS idx_status_events_message ON message_status_events(message_id);
+CREATE INDEX IF NOT EXISTS idx_conversations_user ON conversations(user_wa_id, phone_number_id);
+CREATE INDEX IF NOT EXISTS idx_deliveries_created ON webhook_deliveries(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_deliveries_status ON webhook_deliveries(status);
+CREATE INDEX IF NOT EXISTS idx_attempts_delivery ON webhook_attempts(delivery_id, attempt_number);
+CREATE INDEX IF NOT EXISTS idx_media_phone ON media(phone_number_id);
 """
 
 
@@ -108,6 +127,10 @@ class Store:
                 db.execute("ALTER TABLE simulated_users ADD COLUMN color TEXT")
             if "auto_created" not in user_columns:
                 db.execute("ALTER TABLE simulated_users ADD COLUMN auto_created INTEGER NOT NULL DEFAULT 0")
+            # Favourites are stored rather than kept in browser storage so the
+            # same numbers stay at the top in every tab and after a reload.
+            if "starred" not in user_columns:
+                db.execute("ALTER TABLE simulated_users ADD COLUMN starred INTEGER NOT NULL DEFAULT 0")
             # Backfill colors so pre-upgrade rows render like autocreated ones.
             for row in db.execute("SELECT wa_id FROM simulated_users WHERE color IS NULL OR color=''"):
                 db.execute("UPDATE simulated_users SET color=? WHERE wa_id=?", (generated_color(row[0]), row[0]))
@@ -119,6 +142,15 @@ class Store:
             delivery_columns = {row[1] for row in db.execute("PRAGMA table_info(webhook_deliveries)")}
             if "last_response_body" not in delivery_columns:
                 db.execute("ALTER TABLE webhook_deliveries ADD COLUMN last_response_body BLOB")
+            # Links a delivery back to the inbound message it carries, so the
+            # message's own status can follow whether the business actually
+            # received it. See Engine.receive_inbound.
+            if "message_id" not in delivery_columns:
+                db.execute("ALTER TABLE webhook_deliveries ADD COLUMN message_id TEXT")
+            # Indexed here rather than in SCHEMA: SCHEMA runs first, and on a
+            # database that predates the column CREATE TABLE IF NOT EXISTS is a
+            # no-op, so indexing it up there fails startup with "no such column".
+            db.execute("CREATE INDEX IF NOT EXISTS idx_deliveries_message ON webhook_deliveries(message_id)")
             now = datetime.now(timezone.utc).isoformat()
             db.execute("INSERT OR IGNORE INTO business_accounts VALUES(?,?,?,?)", ("WABA_LOCAL", "BUSINESS_LOCAL", "Ghost Demo Business", now))
             db.execute(

@@ -111,17 +111,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def home():
         return RedirectResponse("/console")
 
+    # The markup is read from disk per request and carries version-stamped asset
+    # URLs, so it must never itself be cached: a cached page would keep pointing
+    # at the previous stylesheet and script.
+    NO_STORE = {"Cache-Control": "no-store, must-revalidate"}
+
     @app.get("/console", response_class=HTMLResponse, include_in_schema=False)
     def console_page():
-        return HTMLResponse(asset("console.html"))
+        return HTMLResponse(asset("console.html"), headers=NO_STORE)
 
     @app.get("/guide", response_class=HTMLResponse, include_in_schema=False)
     def guide_page():
-        return HTMLResponse(asset("console.html"))
+        return HTMLResponse(asset("console.html"), headers=NO_STORE)
 
     @app.get("/phone", response_class=HTMLResponse, include_in_schema=False)
     def phone_page():
-        return HTMLResponse(asset("phone.html"))
+        return HTMLResponse(asset("phone.html"), headers=NO_STORE)
 
     @app.get("/_sandbox/apps")
     def sandbox_apps():
@@ -269,6 +274,30 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return JSONResponse({"error": str(exc) or "A valid clock value is required"}, status_code=400)
         return clock_get()
 
+    @app.get("/_sandbox/stats")
+    def sandbox_stats() -> dict[str, Any]:
+        """Counts for the dashboard tiles, as COUNT(*) rather than array lengths.
+
+        The console used to derive these from the collections it had fetched, so
+        the message tile was really "how many messages we downloaded", capped at
+        the page size and wrong the moment a chat got busy.
+        """
+        def count(table: str) -> int:
+            row = store.one(f"SELECT COUNT(*) AS total FROM {table}")
+            return row["total"] if row else 0
+
+        return {
+            "apps": count("developer_apps"),
+            "businesses": count("business_accounts"),
+            "phone_numbers": count("phone_numbers"),
+            "customers": count("simulated_users"),
+            "conversations": count("conversations"),
+            "messages": count("messages"),
+            "templates": count("templates"),
+            "webhooks": count("webhook_deliveries"),
+            "media": count("media"),
+        }
+
     @app.get("/_sandbox/phones")
     def sandbox_phones() -> dict[str, Any]:
         return {"data": rows(store.all("SELECT * FROM simulated_users ORDER BY created_at"))}
@@ -306,9 +335,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         wa_id = normalize_phone(str(body.get("wa_id", "")))
         if not wa_id:
             return JSONResponse({"error": "wa_id is required"}, status_code=400)
+        # INSERT OR REPLACE rewrites the whole row, so an existing favourite has
+        # to be carried over explicitly or re-adding a number silently unstars it.
+        existing = engine.user(wa_id)
+        was_starred = bool(existing["starred"]) if existing and "starred" in existing.keys() else False
         store.execute(
-            "INSERT OR REPLACE INTO simulated_users(wa_id,display_name,online,blocked,created_at,color,auto_created)"
-            " VALUES(?,?,?,?,?,?,?)",
+            "INSERT OR REPLACE INTO simulated_users(wa_id,display_name,online,blocked,created_at,color,auto_created,starred)"
+            " VALUES(?,?,?,?,?,?,?,?)",
             (
                 wa_id,
                 body.get("display_name") or generated_name(wa_id),
@@ -317,6 +350,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 store.now().isoformat(),
                 body.get("color") or generated_color(wa_id),
                 0,
+                int(body.get("starred", was_starred)),
             ),
         )
         created = dict(engine.user(wa_id))
@@ -342,13 +376,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         current = engine.user(wa_id)
         if not current:
             return JSONResponse({"error": "phone not found"}, status_code=404)
+        # "starred" is a favourite in the simulator's number list: starred
+        # numbers sort above everything else so the handful you actually test
+        # with stay reachable once autocreate has filled the roster.
+        current_starred = bool(current["starred"]) if "starred" in current.keys() else False
         store.execute(
-            "UPDATE simulated_users SET display_name=?,online=?,blocked=?,color=? WHERE wa_id=?",
+            "UPDATE simulated_users SET display_name=?,online=?,blocked=?,color=?,starred=? WHERE wa_id=?",
             (
                 body.get("display_name") or current["display_name"],
                 int(body.get("online", bool(current["online"]))),
                 int(body.get("blocked", bool(current["blocked"]))),
                 body.get("color") or current["color"] or generated_color(normalize_phone(wa_id)),
+                int(body.get("starred", current_starred)),
                 normalize_phone(wa_id),
             ),
         )
@@ -392,6 +431,211 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         for message in unread:
             await engine.set_status(message["id"], "read")
         return {"success": True, "read": len(unread)}
+
+    @app.get("/_sandbox/analytics")
+    def sandbox_analytics(
+        tz_offset: int = Query(0, ge=-840, le=840, description="Minutes to add to UTC for the viewer's local time."),
+        top: int = Query(12, ge=1, le=100, description="How many numbers to rank."),
+    ):
+        """Traffic across every number, not just one chat.
+
+        Answers "which numbers got what", which the per-chat view cannot: it is
+        one aggregate over the whole sandbox, plus a ranked table per customer
+        and per business sender. Like the per-chat version, every figure is a
+        GROUP BY in SQLite, so this costs the same whether the sandbox holds a
+        hundred messages or a million.
+        """
+        shift = f"{tz_offset} minutes"
+        totals = store.one(
+            "SELECT COUNT(*) AS total,"
+            " SUM(CASE WHEN direction='inbound' THEN 1 ELSE 0 END) AS inbound,"
+            " SUM(CASE WHEN direction='outbound' THEN 1 ELSE 0 END) AS outbound,"
+            " MIN(created_at) AS first_at, MAX(created_at) AS last_at FROM messages"
+        )
+        by_hour = {int(row["hour"]): row["total"] for row in store.all(
+            "SELECT CAST(strftime('%H', created_at, ?) AS INTEGER) AS hour, COUNT(*) AS total"
+            " FROM messages GROUP BY hour", (shift,),
+        )}
+        by_day = rows(store.all(
+            "SELECT date(created_at, ?) AS day, COUNT(*) AS total,"
+            " SUM(CASE WHEN direction='inbound' THEN 1 ELSE 0 END) AS inbound,"
+            " SUM(CASE WHEN direction='outbound' THEN 1 ELSE 0 END) AS outbound"
+            " FROM messages GROUP BY day ORDER BY day", (shift,),
+        ))
+        by_type = {row["message_type"]: row["total"] for row in store.all(
+            "SELECT message_type, COUNT(*) AS total FROM messages GROUP BY message_type ORDER BY total DESC"
+        )}
+        # Per customer. LEFT JOIN so a number with no traffic still appears with
+        # zeroes rather than vanishing from a list of "all numbers".
+        customers = rows(store.all(
+            "SELECT u.wa_id, u.display_name, u.color, u.starred, u.auto_created,"
+            " COUNT(m.id) AS total,"
+            " SUM(CASE WHEN m.direction='inbound' THEN 1 ELSE 0 END) AS inbound,"
+            " SUM(CASE WHEN m.direction='outbound' THEN 1 ELSE 0 END) AS outbound,"
+            " MAX(m.created_at) AS last_at,"
+            " COUNT(DISTINCT c.phone_number_id) AS businesses"
+            " FROM simulated_users u"
+            " LEFT JOIN conversations c ON c.user_wa_id=u.wa_id"
+            " LEFT JOIN messages m ON m.conversation_id=c.id"
+            " GROUP BY u.wa_id ORDER BY total DESC, u.display_name LIMIT ?",
+            (top,),
+        ))
+        senders = rows(store.all(
+            "SELECT p.id AS phone_number_id, p.verified_name, p.display_phone_number,"
+            " COUNT(m.id) AS total,"
+            " SUM(CASE WHEN m.direction='inbound' THEN 1 ELSE 0 END) AS inbound,"
+            " SUM(CASE WHEN m.direction='outbound' THEN 1 ELSE 0 END) AS outbound,"
+            " COUNT(DISTINCT c.user_wa_id) AS customers, MAX(m.created_at) AS last_at"
+            " FROM phone_numbers p"
+            " LEFT JOIN conversations c ON c.phone_number_id=p.id"
+            " LEFT JOIN messages m ON m.conversation_id=c.id"
+            " GROUP BY p.id ORDER BY total DESC"
+        ))
+        # The busiest individual pairings, which is the "map across numbers":
+        # which customer talks to which sender, and how much.
+        pairs = rows(store.all(
+            "SELECT c.user_wa_id AS wa_id, c.phone_number_id AS phone_number_id,"
+            " COUNT(m.id) AS total,"
+            " SUM(CASE WHEN m.direction='inbound' THEN 1 ELSE 0 END) AS inbound,"
+            " SUM(CASE WHEN m.direction='outbound' THEN 1 ELSE 0 END) AS outbound,"
+            " MAX(m.created_at) AS last_at"
+            " FROM conversations c LEFT JOIN messages m ON m.conversation_id=c.id"
+            " GROUP BY c.id HAVING total > 0 ORDER BY total DESC LIMIT ?",
+            (top,),
+        ))
+        return {
+            "tz_offset": tz_offset,
+            "total": (totals["total"] if totals else 0) or 0,
+            "inbound": (totals["inbound"] if totals else 0) or 0,
+            "outbound": (totals["outbound"] if totals else 0) or 0,
+            "first_at": totals["first_at"] if totals else None,
+            "last_at": totals["last_at"] if totals else None,
+            "by_hour": [by_hour.get(hour, 0) for hour in range(24)],
+            "by_day": by_day,
+            "by_type": by_type,
+            "customers": customers,
+            "senders": senders,
+            "pairs": pairs,
+        }
+
+    @app.get("/_sandbox/phones/{wa_id}/analytics")
+    def sandbox_chat_analytics(
+        wa_id: str,
+        phone_number_id: str | None = None,
+        tz_offset: int = Query(0, ge=-840, le=840, description="Minutes to add to UTC for the viewer's local time."),
+    ):
+        """Traffic shape for one chat: when messages arrived, and how many.
+
+        Every bucket is aggregated in SQL rather than by shipping the transcript
+        and counting in the browser, so the cost is the same for a 20-message
+        chat and a 200,000-message one. tz_offset is applied inside SQLite so
+        the hour-of-day histogram and the day buckets line up with the clock the
+        reader is actually looking at, instead of drifting by their UTC offset.
+        """
+        normalized = normalize_phone(wa_id)
+        if not engine.user(normalized):
+            return JSONResponse({"error": "phone not found"}, status_code=404)
+        shift = f"{tz_offset} minutes"
+        where = "c.user_wa_id=?"
+        values: list[Any] = [normalized]
+        if phone_number_id:
+            where += " AND c.phone_number_id=?"
+            values.append(phone_number_id)
+        join = (" FROM messages m JOIN conversations c ON c.id=m.conversation_id WHERE " + where)
+
+        totals = store.one(
+            "SELECT COUNT(*) AS total,"
+            " SUM(CASE WHEN m.direction='inbound' THEN 1 ELSE 0 END) AS inbound,"
+            " SUM(CASE WHEN m.direction='outbound' THEN 1 ELSE 0 END) AS outbound,"
+            " MIN(m.created_at) AS first_at, MAX(m.created_at) AS last_at" + join,
+            tuple(values),
+        )
+        by_hour = {int(row["hour"]): row["total"] for row in store.all(
+            "SELECT CAST(strftime('%H', m.created_at, ?) AS INTEGER) AS hour, COUNT(*) AS total"
+            + join + " GROUP BY hour", (shift, *values),
+        )}
+        by_day = rows(store.all(
+            "SELECT date(m.created_at, ?) AS day, COUNT(*) AS total,"
+            " SUM(CASE WHEN m.direction='inbound' THEN 1 ELSE 0 END) AS inbound,"
+            " SUM(CASE WHEN m.direction='outbound' THEN 1 ELSE 0 END) AS outbound"
+            + join + " GROUP BY day ORDER BY day", (shift, *values),
+        ))
+        by_type = {row["message_type"]: row["total"] for row in store.all(
+            "SELECT m.message_type AS message_type, COUNT(*) AS total" + join
+            + " GROUP BY m.message_type ORDER BY total DESC", tuple(values),
+        )}
+        by_status = {row["status"]: row["total"] for row in store.all(
+            "SELECT m.status AS status, COUNT(*) AS total" + join
+            + " AND m.direction='outbound' GROUP BY m.status", tuple(values),
+        )}
+        return {
+            "wa_id": normalized,
+            "phone_number_id": phone_number_id,
+            "tz_offset": tz_offset,
+            "total": (totals["total"] if totals else 0) or 0,
+            "inbound": (totals["inbound"] if totals else 0) or 0,
+            "outbound": (totals["outbound"] if totals else 0) or 0,
+            "first_at": totals["first_at"] if totals else None,
+            "last_at": totals["last_at"] if totals else None,
+            # Always 24 slots, so the histogram has a stable x axis even when a
+            # chat only ever saw traffic in one hour of the day.
+            "by_hour": [by_hour.get(hour, 0) for hour in range(24)],
+            "by_day": by_day,
+            "by_type": by_type,
+            "by_status": by_status,
+        }
+
+    @app.delete("/_sandbox/phones/{wa_id}/messages")
+    async def sandbox_clear_chat(wa_id: str, phone_number_id: str | None = None):
+        """Erase a customer's transcript, for one business chat or all of them.
+
+        The conversation row itself is kept, so the 24-hour service window, the
+        pin and the chat's place in the list all survive: clearing a chat in a
+        real client removes the messages, not the contact. Status events go with
+        the messages because they are only ever read through them, and leaving
+        them behind would grow the table without bound.
+        """
+        normalized = normalize_phone(wa_id)
+        if not engine.user(normalized):
+            return JSONResponse({"error": "phone not found"}, status_code=404)
+        if phone_number_id:
+            conversations = store.all(
+                "SELECT id FROM conversations WHERE user_wa_id=? AND phone_number_id=?",
+                (normalized, phone_number_id),
+            )
+        else:
+            conversations = store.all(
+                "SELECT id FROM conversations WHERE user_wa_id=?", (normalized,)
+            )
+        ids = [row["id"] for row in conversations]
+        deleted = 0
+        if ids:
+            placeholders = ",".join("?" for _ in ids)
+            # One connection for the whole delete: each store.execute() opens
+            # its own, and a chat with thousands of messages would otherwise
+            # pay that cost twice over per conversation.
+            with store.connect() as db:
+                deleted = db.execute(
+                    f"SELECT COUNT(*) AS total FROM messages WHERE conversation_id IN ({placeholders})",
+                    tuple(ids),
+                ).fetchone()["total"]
+                db.execute(
+                    "DELETE FROM message_status_events WHERE message_id IN"
+                    f" (SELECT id FROM messages WHERE conversation_id IN ({placeholders}))",
+                    tuple(ids),
+                )
+                db.execute(
+                    f"DELETE FROM messages WHERE conversation_id IN ({placeholders})",
+                    tuple(ids),
+                )
+        # Observers hold their own copy of the transcript and the unread badges,
+        # so every open tab has to be told rather than left to drift.
+        await engine.broadcast(normalized, {
+            "event": "chat_cleared",
+            "phone_number_id": phone_number_id,
+            "deleted": deleted,
+        })
+        return {"success": True, "deleted": deleted, "phone_number_id": phone_number_id}
 
     @app.get("/_sandbox/phones/{wa_id}/pins")
     def sandbox_pins(wa_id: str):
@@ -504,6 +748,90 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             item["service_window_open"] = bool(item["service_window_expires_at"] and now < item["service_window_expires_at"])
         return {"data": data}
 
+    @app.get("/_sandbox/messages/{message_id}/diagnostics")
+    def sandbox_message_diagnostics(message_id: str):
+        """Everything that happened to one message: status hops and webhooks.
+
+        This is the "why did my integration not see this" view. Each hop carries
+        the delay since the message was created, and each webhook carries the
+        HTTP result and the error, so a failure is attributable without digging
+        through the whole delivery log.
+
+        Deliveries are matched by scanning for the message id inside the stored
+        request body. That is a LIKE scan, so it is bounded two ways: only
+        deliveries at or after the message's own timestamp are considered (a
+        webhook about a message cannot predate it) and at most 25 are returned.
+        The created_at index makes that range the only part actually walked.
+        """
+        message = store.one("SELECT * FROM messages WHERE id=?", (message_id,))
+        if not message:
+            return JSONResponse({"error": "message not found"}, status_code=404)
+        created_at = message["created_at"]
+
+        def delay_ms(value: str | None) -> float | None:
+            if not value:
+                return None
+            try:
+                return round((parse_datetime(value) - parse_datetime(created_at)).total_seconds() * 1000, 1)
+            except (TypeError, ValueError):
+                return None
+
+        events = []
+        for row in store.all(
+            "SELECT status, timestamp FROM message_status_events WHERE message_id=? ORDER BY timestamp",
+            (message_id,),
+        ):
+            events.append({
+                "status": row["status"],
+                "at": row["timestamp"],
+                "delay_ms": delay_ms(row["timestamp"]),
+            })
+
+        deliveries = []
+        for row in store.all(
+            "SELECT id, event_type, destination_url, status, attempt_count, last_status_code,"
+            " last_error, created_at, delivered_at FROM webhook_deliveries"
+            " WHERE created_at >= ? AND request_body LIKE ?"
+            " ORDER BY created_at LIMIT 25",
+            (created_at, f"%{message_id}%"),
+        ):
+            item = dict(row)
+            item["queued_delay_ms"] = delay_ms(row["created_at"])
+            item["delivered_delay_ms"] = delay_ms(row["delivered_at"])
+            item["attempts"] = rows(store.all(
+                "SELECT attempt_number, requested_at, completed_at, status_code, error"
+                " FROM webhook_attempts WHERE delivery_id=? ORDER BY attempt_number",
+                (row["id"],),
+            ))
+            deliveries.append(item)
+
+        # A message whose webhooks all failed or were never routed is the case
+        # worth flagging: the sandbox accepted it, the integration never saw it.
+        statuses = {item["status"] for item in deliveries}
+        if not deliveries:
+            verdict = "no_webhook"
+        elif "failed" in statuses:
+            verdict = "webhook_failed"
+        elif statuses == {"unrouted"}:
+            verdict = "unrouted"
+        elif "pending" in statuses:
+            verdict = "pending"
+        else:
+            verdict = "delivered"
+
+        return {
+            "id": message_id,
+            "direction": message["direction"],
+            "message_type": message["message_type"],
+            "status": message["status"],
+            "failure_code": message["failure_code"],
+            "created_at": created_at,
+            "updated_at": message["updated_at"],
+            "events": events,
+            "deliveries": deliveries,
+            "verdict": verdict,
+        }
+
     @app.post("/_sandbox/messages/{message_id}/status")
     async def sandbox_status(message_id: str, body: dict[str, Any] = Body(...)):
         if not store.one("SELECT id FROM messages WHERE id=?", (message_id,)):
@@ -513,21 +841,103 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await engine.set_status(message_id, body["status"])
         return {"success": True}
 
+    @app.get("/_sandbox/webhooks/stats")
+    def sandbox_webhook_stats() -> dict[str, Any]:
+        """Delivery counts by status, without shipping a single delivery body.
+
+        The console header needs four numbers. It used to get them by counting
+        an unbounded array of full deliveries in the browser, so painting the
+        page cost every request body ever recorded.
+        """
+        counts = {row["status"]: row["total"] for row in store.all(
+            "SELECT status, COUNT(*) AS total FROM webhook_deliveries GROUP BY status"
+        )}
+        return {
+            "total": sum(counts.values()),
+            "delivered": counts.get("delivered", 0),
+            "failed": counts.get("failed", 0),
+            "unrouted": counts.get("unrouted", 0),
+            "pending": counts.get("pending", 0),
+            "by_status": counts,
+        }
+
     @app.get("/_sandbox/webhooks")
-    def sandbox_webhooks():
-        data = rows(store.all("SELECT * FROM webhook_deliveries ORDER BY created_at DESC"))
-        for item in data:
-            item["request_body"] = json.loads(bytes(item["request_body"]))
-            if isinstance(item.get("last_response_body"), bytes):
-                item["last_response_body"] = item["last_response_body"].decode("utf-8", errors="replace")
-            item["attempts"] = rows(store.all(
-                "SELECT * FROM webhook_attempts WHERE delivery_id=? ORDER BY attempt_number",
-                (item["id"],),
-            ))
-            for attempt in item["attempts"]:
+    def sandbox_webhooks(
+        limit: int = Query(100, ge=1, le=500),
+        before: str | None = Query(None, description="Delivery id to page backwards from."),
+        status: str | None = Query(None, description="Only deliveries in this status."),
+    ):
+        """Newest deliveries first, paged the same way messages are.
+
+        This endpoint used to return every delivery ever recorded and then run
+        one more query per delivery for its attempts. Because Store.all opens a
+        fresh SQLite connection per call, a few thousand deliveries meant a few
+        thousand connection opens inside one request: it took minutes, and the
+        console blocked on it during boot. Attempts are now fetched for the
+        current page in a single query and grouped in memory.
+        """
+        anchor: tuple[str, int] | None = None
+        if before:
+            row = store.one("SELECT created_at, rowid FROM webhook_deliveries WHERE id=?", (before,))
+            if not row:
+                return JSONResponse({"error": "before cursor is not a known delivery id"}, status_code=400)
+            anchor = (row["created_at"], row["rowid"])
+
+        clauses: list[str] = []
+        values: list[Any] = []
+        if status:
+            clauses.append("status=?")
+            values.append(status)
+        if anchor:
+            clauses.append("(created_at, rowid) < (?, ?)")
+            values.extend(anchor)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        # One extra row answers "is there more?" without a second COUNT query.
+        probe = limit + 1
+        data = rows(store.all(
+            "SELECT * FROM webhook_deliveries" + where
+            + " ORDER BY created_at DESC, rowid DESC LIMIT ?",
+            (*values, probe),
+        ))
+        has_more = len(data) > limit
+        data = data[:limit]
+
+        attempts_by_delivery: dict[str, list[dict[str, Any]]] = {}
+        if data:
+            placeholders = ",".join("?" for _ in data)
+            for attempt in rows(store.all(
+                f"SELECT * FROM webhook_attempts WHERE delivery_id IN ({placeholders})"
+                " ORDER BY delivery_id, attempt_number",
+                tuple(item["id"] for item in data),
+            )):
                 if isinstance(attempt.get("response_body"), bytes):
                     attempt["response_body"] = attempt["response_body"].decode("utf-8", errors="replace")
-        return {"data": data}
+                attempts_by_delivery.setdefault(attempt["delivery_id"], []).append(attempt)
+
+        for item in data:
+            item.pop("rowid", None)
+            try:
+                item["request_body"] = json.loads(bytes(item["request_body"]))
+            except (TypeError, ValueError):
+                item["request_body"] = {}
+            if isinstance(item.get("last_response_body"), bytes):
+                item["last_response_body"] = item["last_response_body"].decode("utf-8", errors="replace")
+            item["attempts"] = attempts_by_delivery.get(item["id"], [])
+        return {
+            "data": data,
+            "has_more": has_more,
+            "next_before": data[-1]["id"] if data and has_more else None,
+        }
+
+    @app.delete("/_sandbox/webhooks")
+    def sandbox_webhooks_clear():
+        """Drop the whole delivery log. Retained history is debugging noise once
+        it is old, and a long-running sandbox accumulates a lot of it."""
+        with store.connect() as db:
+            removed = db.execute("SELECT COUNT(*) AS total FROM webhook_deliveries").fetchone()["total"]
+            db.execute("DELETE FROM webhook_attempts")
+            db.execute("DELETE FROM webhook_deliveries")
+        return {"success": True, "deleted": removed}
 
     @app.get("/_sandbox/webhook-subscriptions")
     def sandbox_webhook_subscriptions():

@@ -256,12 +256,19 @@ class Engine:
         normalized = {"from": wa_id, "id": message_id, "timestamp": str(int(now.timestamp())), "type": message_type, message_type: payload}
         if context and context.get("id"):
             normalized["context"] = {"id": str(context["id"])}
+        # A customer->business message starts at "sent" (one tick), NOT
+        # "delivered". For this direction the webhook IS the delivery: the
+        # business has no device in this sandbox, it has an integration. Marking
+        # it delivered up front claimed the business had received a message that
+        # may have been stored unrouted or failed on the wire, so the transcript
+        # showed two ticks for something nobody ever got. deliver_webhook
+        # promotes it to "delivered" only once the callback returns 2xx.
         self.store.execute(
             "INSERT INTO messages VALUES(?,?,?,?,?,?,?,?,?,?,?,NULL)",
-            (message_id, conversation_id, "inbound", wa_id, phone_id, message_type, json.dumps(normalized), "v25.0", "delivered", now.isoformat(), now.isoformat()),
+            (message_id, conversation_id, "inbound", wa_id, phone_id, message_type, json.dumps(normalized), "v25.0", "sent", now.isoformat(), now.isoformat()),
         )
         self.store.execute("UPDATE conversations SET last_user_message_at=?,service_window_expires_at=? WHERE id=?", (now.isoformat(), expires.isoformat(), conversation_id))
-        await self.queue_webhook(phone_id, "messages", contacts=[{"profile": {"name": self.user(wa_id)["display_name"]}, "wa_id": wa_id}], messages=[normalized])
+        await self.queue_webhook(phone_id, "messages", message_id=message_id, contacts=[{"profile": {"name": self.user(wa_id)["display_name"]}, "wa_id": wa_id}], messages=[normalized])
         # phone_number_id travels beside the message, never inside it: normalized
         # is the exact Meta wire shape that also goes to webhooks, and an
         # invented field there would make the sandbox lie about the real API.
@@ -280,7 +287,14 @@ class Engine:
         value.update({key: val for key, val in content.items() if val})
         return {"object": "whatsapp_business_account", "entry": [{"id": phone["waba_id"], "changes": [{"value": value, "field": field}]}]}
 
-    async def queue_webhook(self, phone_id: str, field: str, **content: Any) -> None:
+    async def queue_webhook(self, phone_id: str, field: str, message_id: str | None = None, **content: Any) -> None:
+        """Queue one webhook event.
+
+        ``message_id`` links the delivery to the inbound message it carries, so
+        that message's own status can follow whether the business actually
+        received it. Status events and outbound notifications pass None: their
+        message's state belongs to the simulated phone, not to the callback.
+        """
         phone = self.phone(phone_id)
         if not phone:
             return
@@ -289,16 +303,18 @@ class Engine:
         if not subscriptions:
             signature = "sha256=" + hmac.new(self.settings.app_secret.encode(), body, hashlib.sha256).hexdigest()
             self.store.execute(
-                "INSERT INTO webhook_deliveries(id,event_type,destination_url,request_body,signature,status,attempt_count,last_status_code,last_error,created_at,delivered_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-                ("whd_" + uuid.uuid4().hex, field, None, body, signature, "unrouted", 0, None, None, self.store.now().isoformat(), None),
+                "INSERT INTO webhook_deliveries(id,event_type,destination_url,request_body,signature,status,attempt_count,last_status_code,last_error,created_at,delivered_at,message_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                ("whd_" + uuid.uuid4().hex, field, None, body, signature, "unrouted", 0, None, None, self.store.now().isoformat(), None, message_id),
             )
+            # Nothing is subscribed, so the business never receives this. The
+            # message stays at one tick rather than being promoted.
         for subscription in subscriptions:
             signing_secret = subscription["app_secret"] or self.settings.app_secret
             signature = "sha256=" + hmac.new(signing_secret.encode(), body, hashlib.sha256).hexdigest()
             delivery_id = "whd_" + uuid.uuid4().hex
             self.store.execute(
-                "INSERT INTO webhook_deliveries(id,event_type,destination_url,request_body,signature,status,attempt_count,last_status_code,last_error,created_at,delivered_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-                (delivery_id, field, subscription["callback_url"], body, signature, "pending", 0, None, None, self.store.now().isoformat(), None),
+                "INSERT INTO webhook_deliveries(id,event_type,destination_url,request_body,signature,status,attempt_count,last_status_code,last_error,created_at,delivered_at,message_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                (delivery_id, field, subscription["callback_url"], body, signature, "pending", 0, None, None, self.store.now().isoformat(), None, message_id),
             )
             asyncio.create_task(self.deliver_webhook(delivery_id))
 
@@ -323,12 +339,52 @@ class Engine:
                 "UPDATE webhook_attempts SET completed_at=?,status_code=?,response_body=? WHERE id=?",
                 (completed_at, response.status_code, response.content, attempt_id),
             )
+            if status == "delivered":
+                await self.confirm_inbound_delivery(delivery["message_id"])
         except Exception as exc:
             self.store.execute("UPDATE webhook_deliveries SET status='failed',attempt_count=?,last_error=? WHERE id=?", (attempts, str(exc), delivery_id))
             self.store.execute(
                 "UPDATE webhook_attempts SET completed_at=?,error=? WHERE id=?",
                 (self.store.now().isoformat(), str(exc), attempt_id),
             )
+
+    async def confirm_inbound_delivery(self, message_id: str | None) -> None:
+        """Promote a customer->business message to "delivered" (two ticks).
+
+        Called only when the callback that carried it returned 2xx, which is the
+        only evidence in this sandbox that the business received it at all. A
+        successful replay of a previously failed delivery therefore also flips
+        the ticks, which is exactly what a retry means.
+
+        Guarded to inbound messages still sitting at "sent": status events reuse
+        deliver_webhook too, and an outbound message's state belongs to the
+        simulated phone rather than to anyone's callback.
+        """
+        if not message_id:
+            return
+        message = self.store.one(
+            "SELECT id, direction, status, recipient_id FROM messages WHERE id=?", (message_id,)
+        )
+        if not message or message["direction"] != "inbound" or message["status"] != "sent":
+            return
+        now = self.store.now()
+        self.store.execute(
+            "UPDATE messages SET status='delivered',updated_at=? WHERE id=?", (now.isoformat(), message_id)
+        )
+        self.store.execute(
+            "INSERT INTO message_status_events VALUES(?,?,?,?,?)",
+            ("evt_" + uuid.uuid4().hex, message_id, "delivered", now.isoformat(),
+             json.dumps({"id": message_id, "status": "delivered",
+                         "timestamp": str(int(now.timestamp())),
+                         "recipient_id": message["recipient_id"]})),
+        )
+        # The customer's own tab is the one showing these ticks, and the sender
+        # of an inbound message is the customer.
+        sender = self.store.one("SELECT sender_id FROM messages WHERE id=?", (message_id,))
+        if sender:
+            await self.broadcast(sender["sender_id"], {
+                "event": "status", "message_id": message_id, "status": "delivered",
+            })
 
     def message_row(self, message: Any) -> dict[str, Any]:
         """A stored message as clients expect it: payload parsed, not a string.

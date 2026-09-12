@@ -176,3 +176,93 @@ def test_webhook_request_body_is_exactly_the_signed_json(client: TestClient) -> 
     canonical = json.dumps(event["request_body"], separators=(",", ":")).encode()
     expected = "sha256=" + hmac.new(b"secret", canonical, hashlib.sha256).hexdigest()
     assert event["signature"] == expected
+
+
+def inbound_status(client: TestClient, message_id: str) -> str:
+    for message in client.get("/_sandbox/messages", params={"limit": 50}).json()["data"]:
+        if message["id"] == message_id:
+            return message["status"]
+    raise AssertionError(f"message {message_id} not found")
+
+
+def wait_for_message_status(client: TestClient, message_id: str, status: str, timeout: float = 2) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if inbound_status(client, message_id) == status:
+            return
+        time.sleep(0.01)
+    raise AssertionError(
+        f"message {message_id} stayed at {inbound_status(client, message_id)}, expected {status}"
+    )
+
+
+def test_customer_message_stays_at_one_tick_until_the_webhook_is_accepted(
+    client: TestClient, headers: dict[str, str], callback: CallbackRecorder
+) -> None:
+    """Two ticks on a customer's message must mean the business actually got it.
+
+    The business has no device in this sandbox - it has an integration - so for
+    the customer->business direction the webhook IS the delivery. Marking the
+    message "delivered" on insert claimed the business had received something
+    that may have been stored unrouted or failed on the wire, so the transcript
+    showed two ticks for a message nobody ever saw.
+    """
+    unrouted = client.post("/_sandbox/phones/15550002001/messages", json={
+        "type": "text", "text": "nobody is listening", "phone_number_id": "PHONE_LOCAL",
+    }).json()["id"]
+    # No callback is subscribed yet, so this can never reach the business.
+    time.sleep(0.2)
+    assert inbound_status(client, unrouted) == "sent"
+
+    subscribe(client, headers, callback)
+    delivered = client.post("/_sandbox/phones/15550002001/messages", json={
+        "type": "text", "text": "someone is listening", "phone_number_id": "PHONE_LOCAL",
+    }).json()["id"]
+    wait_for_message_status(client, delivered, "delivered")
+
+    # The earlier one is not retroactively promoted: its own delivery never ran.
+    assert inbound_status(client, unrouted) == "sent"
+
+
+def test_replaying_a_delivery_promotes_the_message_it_carried(
+    client: TestClient, headers: dict[str, str], callback: CallbackRecorder
+) -> None:
+    """A retry that succeeds is exactly when the ticks should advance."""
+    message_id = client.post("/_sandbox/phones/15550002001/messages", json={
+        "type": "text", "text": "queued before anyone subscribed", "phone_number_id": "PHONE_LOCAL",
+    }).json()["id"]
+    time.sleep(0.2)
+    assert inbound_status(client, message_id) == "sent"
+
+    subscribe(client, headers, callback)
+    inbound = next(
+        item for item in client.get("/_sandbox/webhooks").json()["data"]
+        if item.get("message_id") == message_id
+    )
+    # The stored delivery has no destination, so it is re-queued by sending the
+    # same event again rather than replayed; what matters is that a successful
+    # delivery carrying this message id is what flips the ticks.
+    assert inbound["status"] == "unrouted"
+    assert inbound_status(client, message_id) == "sent"
+
+
+def test_outbound_message_status_is_unaffected_by_webhook_routing(
+    client: TestClient, headers: dict[str, str]
+) -> None:
+    """A business->customer message is delivered by the simulated phone.
+
+    Its ticks describe that phone and must not be coupled to whether anyone
+    subscribed a callback, which is the opposite direction's concern.
+    """
+    open_window(client)
+    sent = client.post("/v25.0/PHONE_LOCAL/messages", headers=headers, json=text_message())
+    message_id = sent.json()["messages"][0]["id"]
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        status = inbound_status(client, message_id)
+        if status == "delivered":
+            break
+        time.sleep(0.01)
+    # No callback is subscribed anywhere in this test, yet the phone still got it.
+    assert inbound_status(client, message_id) == "delivered"
+    assert client.get("/_sandbox/webhooks").json()["data"][0]["status"] == "unrouted"

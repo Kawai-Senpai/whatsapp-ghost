@@ -53,7 +53,14 @@ function goto(page){
   if(page==='webhooks'){ showSkeleton('#webhook-list', 4); loadWebhooks(); }
   if(page==='templates'){ showSkeleton('#template-list', 3); loadTemplates(); }
   if(page==='guide') renderGuide();
-  if(page==='simulator'){ showSkeleton('#sim-activity', 4); loadSimActivity(); }
+  if(page==='simulator'){ showSkeleton('#sim-activity', 4); loadSimActivity(); renderAnalytics(); loadAnalytics(); }
+  if(page==='overview'){
+    renderAnalytics(); loadAnalytics();
+    // The dashboard carries the live feed and the notifications now, so it has
+    // to seed them the same way the simulator page does.
+    if(!state.activity.length){ showSkeleton('#dash-activity', 3); loadSimActivity(); }
+    renderDashNumbers(); renderNotifications();
+  }
 }
 document.querySelectorAll('[data-page]').forEach(b=>b.addEventListener('click',e=>{ e.preventDefault(); goto(b.dataset.page); }));
 
@@ -80,12 +87,16 @@ async function loadAll(){
     .forEach(selector=>showSkeleton(selector, 3));
   try{
     state.config = await req('/_sandbox/config');
-    const [apps,biz,users,msgs] = await Promise.all([
+    // Boot fetches only what the first paint needs. It used to also pull 500
+    // messages and the ENTIRE webhook delivery log - unbounded, one extra query
+    // per delivery - and await both before showing anything, which is why
+    // /console took minutes on a sandbox that had been running a while.
+    const [apps,biz,users,stats] = await Promise.all([
       req('/_sandbox/apps'), req('/_sandbox/businesses'),
-      req('/_sandbox/phones'), req('/_sandbox/messages?limit=500')
+      req('/_sandbox/phones'), req('/_sandbox/stats').catch(()=>null)
     ]);
-    state.apps=apps.data; state.businesses=biz.data; state.users=users.data; state.messages=msgs.data;
-    const numbers = state.businesses.reduce((n,b)=>n+b.phone_numbers.length,0);
+    state.apps=apps.data; state.businesses=biz.data; state.users=users.data;
+    state.stats = stats || {};
 
     $('#base-small').textContent = state.config.base_url.replace(/^https?:\/\//,'');
     if($('#avatar-mode')) $('#avatar-mode').textContent = state.config.base_url.replace(/^https?:\/\//,'') + ' · ' + state.config.mode;
@@ -94,23 +105,58 @@ async function loadAll(){
     renderMetrics();
 
     renderApps(); renderBusinesses(); renderUsers(); fillSelectors();
-    await loadTemplates(); await loadWebhooks();
-    renderCredentials();
+    renderCredentials(); renderQuickCreds();
+    // Everything below is either a different page or a secondary panel, so it
+    // fills in behind the painted dashboard instead of holding it up.
+    loadTemplates();
+    loadWebhookStats();
+    if(state.page === 'webhooks') loadWebhooks();
   }catch(e){ toast(e.message,true); }
+}
+
+/* Delivery counters without the deliveries. The four numbers in the webhook
+   header are the only thing the dashboard needs from that table. */
+async function loadWebhookStats(){
+  try{
+    const d = await req('/_sandbox/webhooks/stats');
+    state.webhookStats = d;
+    // Eight newest deliveries for the dashboard panel. Cheap enough to refresh
+    // alongside the counters, and independent of the webhook page's own paging.
+    if(d.total){
+      req('/_sandbox/webhooks?limit=8')
+        .then(page=>{ state.dashHooks = page.data || []; renderNotifications(); })
+        .catch(()=>{});
+    }else{
+      state.dashHooks = [];
+    }
+    const set = (id, value) => { const el=$(id); if(el) el.textContent = value; };
+    set('#wh-total', d.total); set('#wh-delivered', d.delivered);
+    set('#wh-failed', d.failed); set('#wh-unrouted', d.unrouted);
+    renderNotifications();
+  }catch{ /* the page still works without the counters */ }
 }
 /* Dashboard counters and the get-started checklist, recomputed from state.
    Split out of loadAll so a live event can refresh them without re-fetching
    every collection in the console. */
 function renderMetrics(){
   const numbers = state.businesses.reduce((n,b)=>n+b.phone_numbers.length,0);
+  // Message count comes from COUNT(*), not from the length of whatever page of
+  // messages happens to be loaded, which silently pegged this tile at its cap.
+  const messages = state.stats?.messages ?? state.messages.length;
   if($('#m-apps')) $('#m-apps').textContent = state.apps.length;
   if($('#m-numbers')) $('#m-numbers').textContent = numbers;
   if($('#m-users')) $('#m-users').textContent = state.users.length;
-  if($('#m-messages')) $('#m-messages').textContent = state.messages.length;
+  if($('#m-messages')) $('#m-messages').textContent = messages.toLocaleString();
 
   setTask('task-number', numbers>0); setTask('s-number', numbers>0);
   setTask('task-user', state.users.length>0); setTask('s-user', state.users.length>0);
-  setTask('task-msg', state.messages.length>0); setTask('s-msg', state.messages.length>0);
+  setTask('task-msg', messages>0); setTask('s-msg', messages>0);
+}
+
+/* The dashboard's message counter has to keep moving as traffic arrives, but
+   re-running COUNT(*) per message would be worse than the problem. */
+function bumpMessageCount(by=1){
+  if(state.stats) state.stats.messages = (state.stats.messages||0) + by;
 }
 
 function setTask(id, done){ const el=$('#'+id); if(el) el.classList.toggle('done', done); const c=el?.querySelector('.check'); if(c) c.textContent=done?'✓':''; }
@@ -166,12 +212,16 @@ function userMatches(u, q){
 }
 
 function renderUsers(){
+  renderDashNumbers();
   const q = (state.userFilter || '').trim().toLowerCase();
   const all = state.users;
   // Unread first (whoever is waiting on a reply should never be scrolled to),
   // then most recently active, and only then by name.
+  // Favourites lead, exactly as in the dashboard list and the simulator's own
+  // roster: three views of one set of numbers must not disagree on order.
   const shown = all.filter(u => userMatches(u, q))
-    .sort((a,b)=> unreadFor(b.wa_id)-unreadFor(a.wa_id)
+    .sort((a,b)=> Number(!!b.starred)-Number(!!a.starred)
+      || unreadFor(b.wa_id)-unreadFor(a.wa_id)
       || lastSeenFor(b.wa_id)-lastSeenFor(a.wa_id)
       || String(a.display_name||'').localeCompare(String(b.display_name||'')));
   const counter = $('#user-count');
@@ -192,7 +242,10 @@ function renderUsers(){
     const color = u.color || '#25D366';
     const name = esc(u.display_name);
     return `
-    <div class="item user-item"><div class="user-row">
+    <div class="item user-item ${u.starred?'starred':''}"><div class="user-row">
+      <button class="user-star ${u.starred?'on':''}" data-star-wa="${esc(u.wa_id)}" aria-pressed="${!!u.starred}"
+              title="${u.starred?'Remove '+name+' from favourites':'Add '+name+' to favourites'}"
+              aria-label="${u.starred?'Remove from favourites':'Add to favourites'}"><svg class="ico"><use href="#i-star"/></svg></button>
       <div class="avatar wa" style="background:${esc(color)}1f;color:${esc(color)}">${esc(initials(u.display_name))}</div>
       <div class="grow user-id">
         <b title="${name}">${name}${u.auto_created ? '<span class="badge gray" title="Created automatically on first message">auto</span>' : ''}</b>
@@ -270,6 +323,10 @@ async function loadTemplates(){
       <button class="btn danger small" onclick='deleteTemplate(${JSON.stringify(t._wabaId)},${JSON.stringify(t.name)})'>Delete</button></div>
       <div style="margin-top:10px;color:var(--muted)">${esc(t.components?.find(c=>c.type==='BODY')?.text||'')}</div>
     </div>`).join('') || '<div class="empty">No templates yet.</div>';
+  // Definitions arrive after the first paint now, and a template message can
+  // only be rendered to its real body once its definition is known, so any
+  // feed already on screen is rebuilt with the names resolved.
+  if(state.activity?.length) loadSimActivity();
 }
 
 async function deleteTemplate(wabaId,name){
@@ -283,14 +340,19 @@ Messages already sent with it keep their stored payload, but new sends naming it
     await loadTemplates();
   }catch(x){ toast(x.message,true); }
 }
+// One page of history at a time. The whole log used to come down on every
+// console load; the counters now come from /_sandbox/webhooks/stats instead, so
+// this only has to cover what is actually being read.
+const WEBHOOK_PAGE = 200;
+
 async function loadWebhooks(){
-  const [events,subscriptions] = await Promise.all([req('/_sandbox/webhooks'),req('/_sandbox/webhook-subscriptions')]);
+  const [events,subscriptions] = await Promise.all([
+    req('/_sandbox/webhooks?limit='+WEBHOOK_PAGE), req('/_sandbox/webhook-subscriptions')]);
   state.webhooks=events.data; state.subscriptions=subscriptions.data;
+  state.hookMore = !!events.has_more; state.hookBefore = events.next_before || null;
+  state.dashHooks = state.webhooks.slice(0, 8);
   $('#wh-subscriptions').textContent=state.subscriptions.filter(s=>s.active).length;
-  $('#wh-total').textContent=state.webhooks.length;
-  $('#wh-delivered').textContent=state.webhooks.filter(w=>w.status==='delivered').length;
-  $('#wh-failed').textContent=state.webhooks.filter(w=>w.status==='failed').length;
-  const unrouted=$('#wh-unrouted'); if(unrouted) unrouted.textContent=state.webhooks.filter(w=>w.status==='unrouted').length;
+  loadWebhookStats();
   populateWebhookFilters();
   $('#subscription-list').innerHTML=state.subscriptions.filter(s=>s.active).map(s=>`
     <div class="subscription-row"><span class="badge">ACTIVE</span><div class="grow"><b>${esc(s.business_name||s.waba_id)}</b><small>${esc(s.callback_url)} · ${esc(s.app_name||s.app_id||'Local app')}</small></div><code>${esc(s.waba_id)}</code><button class="btn danger small" onclick='unsubscribeWebhook(${JSON.stringify(s.waba_id)},${JSON.stringify(s.app_id||"")},${JSON.stringify(s.business_name||s.waba_id)})'>Unsubscribe</button></div>`).join('')||'<div class="empty">No callback is subscribed. Unrouted events are still retained in history.</div>';
@@ -378,8 +440,14 @@ function renderWebhookHistory(page){
     return true;
   });
   const counter=$('#hook-count');
-  if(counter) counter.textContent = active ? `${items.length} of ${state.webhooks.length}` : `${state.webhooks.length}`;
+  // The stored total and the loaded window are different numbers now that
+  // history is paged, and conflating them made the count look wrong.
+  const stored = state.webhookStats?.total;
+  if(counter) counter.textContent = active
+    ? `${items.length} of ${state.webhooks.length} loaded`
+    : (state.hookMore && stored ? `${state.webhooks.length} of ${stored.toLocaleString()}` : `${state.webhooks.length}`);
   const clear=$('#hook-clear'); if(clear) clear.hidden = !active;
+  const older=$('#hook-more-wrap'); if(older) older.hidden = !state.hookMore;
 
   sortWebhooks(items, $('#hook-sort')?.value||'newest');
   const size=parseInt($('#hook-size')?.value||'25',10);
@@ -518,6 +586,40 @@ async function deletePhone(wa, name){
   catch(e){ toast(e.message,true); }
 }
 async function replay(id){ try{ await req(`/_sandbox/webhooks/${id}/replay`,{method:'POST'}); toast('Delivery replayed'); loadWebhooks(); }catch(e){ toast(e.message,true); } }
+
+/* Older deliveries on demand, keyset-paged like the message feeds. */
+async function loadMoreWebhooks(){
+  if(!state.hookMore || state.hookLoading || !state.hookBefore) return;
+  state.hookLoading = true;
+  const button = $('#hook-more');
+  if(button){ button.disabled = true; button.innerHTML = '<span class="busy-dot"></span> Loading'; }
+  try{
+    const d = await req('/_sandbox/webhooks?limit='+WEBHOOK_PAGE+'&before='+encodeURIComponent(state.hookBefore));
+    const seen = new Set(state.webhooks.map(w=>w.id));
+    for(const item of (d.data||[])) if(!seen.has(item.id)) state.webhooks.push(item);
+    state.hookMore = !!d.has_more; state.hookBefore = d.next_before || null;
+    populateWebhookFilters();
+  }catch(e){ toast(e.message, true); }
+  finally{
+    state.hookLoading = false;
+    if(button){ button.disabled = false; button.textContent = 'Load older deliveries'; }
+    renderWebhookHistory();
+  }
+}
+
+/* Clearing the delivery log. A long-running sandbox accumulates tens of
+   thousands of these, and they are debugging noise once they are old. */
+async function clearWebhookHistory(){
+  const total = state.webhookStats?.total ?? state.webhooks.length;
+  if(!confirm(`Delete all ${Number(total).toLocaleString()} stored webhook deliveries?\nThis cannot be undone. Subscriptions are not affected.`)) return;
+  try{
+    const d = await req('/_sandbox/webhooks',{method:'DELETE'});
+    toast(`Cleared ${Number(d.deleted||0).toLocaleString()} deliveries`);
+    state.webhooks=[]; state.hookMore=false; state.hookBefore=null;
+    await loadWebhookStats();
+    renderWebhookHistory(1);
+  }catch(e){ toast(e.message,true); }
+}
 async function advanceClock(){ try{ const d=await req('/_sandbox/clock',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'advance',value:'25h'})}); toast('Clock is now '+d.now); }catch(e){ toast(e.message,true); } }
 
 /* ---- phone tab ---- */
@@ -550,7 +652,7 @@ try{
 }catch{ /* private mode: start on the default page */ }
 loadAll().then(()=>gsWarmIndex())
   .then(loadSimUnread).then(renderUsers)
-  .then(loadSimActivity).then(connectConsoleObserver);
+  .then(loadSimActivity).then(loadAnalytics).then(connectConsoleObserver);
 
 /* ---- credentials ---- */
 const CRED_FORMATS = ['.env', 'curl', 'Python', 'Node', 'JSON'];
@@ -955,7 +1057,38 @@ function simBusinessName(phoneId){
   return phoneId || 'Business';
 }
 
-/* Summarise one stored message row for the activity list. */
+/* Fill a template's positional {{n}} parameters from what was actually sent,
+   so the feed shows the text the recipient saw rather than a bare name. */
+function templateParamValue(param){
+  if(!param || typeof param !== 'object') return '';
+  if(param.type === 'currency') return param.currency?.fallback_value ?? '';
+  if(param.type === 'date_time') return param.date_time?.fallback_value ?? '';
+  return param.text ?? '';
+}
+
+function templateDefinition(name, language){
+  const all = Array.isArray(state.templates) ? state.templates : [];
+  return all.find(t => t.name === name && (!language || t.language === language))
+      || all.find(t => t.name === name);
+}
+
+function renderedTemplateBody(sent){
+  const name = sent?.name;
+  if(!name) return '';
+  const definition = templateDefinition(name, sent.language?.code);
+  const body = (definition?.components || []).find(c => (c.type||'').toUpperCase() === 'BODY');
+  if(!body || typeof body.text !== 'string') return '';
+  const values = ((sent.components || []).find(c => (c.type||'').toLowerCase() === 'body')?.parameters || [])
+    .map(templateParamValue);
+  return body.text.replace(/\{\{(\d+)\}\}/g, (match, index) => {
+    const value = values[Number(index) - 1];
+    return value === undefined || value === '' ? match : value;
+  }).replace(/\s+/g, ' ').trim();
+}
+
+/* Summarise one stored message row for the activity list. Templates return
+   both halves: the row shows the name as a tag AND the text it rendered to,
+   because the name alone says nothing about what was actually sent. */
 function simSummary(message){
   const type = message.message_type || message.type || 'text';
   const payload = message.payload || message;
@@ -963,10 +1096,24 @@ function simSummary(message){
     const text = payload.text;
     return typeof text === 'string' ? text : (text?.body || payload.body || '');
   }
-  if(type === 'template') return (payload.template?.name || payload.name || 'template');
+  if(type === 'template'){
+    const sent = payload.template || payload;
+    return renderedTemplateBody(sent) || sent.name || 'template';
+  }
   if(type === 'button') return payload.button?.text || payload.button?.payload || 'Button reply';
   if(type === 'reaction') return payload.reaction?.emoji || 'Reaction';
+  const media = payload[type];
+  if(media && (media.caption || media.filename)) return media.caption || media.filename;
   return '[' + type + ']';
+}
+
+/* The template's own name, kept beside the rendered text rather than instead
+   of it: the name is what you grep the code for, the text is what was sent. */
+function simTemplateName(message){
+  const type = message.message_type || message.type;
+  if(type !== 'template') return '';
+  const payload = message.payload || message;
+  return (payload.template || payload).name || '';
 }
 
 function pushSimActivity(entry){
@@ -980,6 +1127,7 @@ function pushSimActivity(entry){
 }
 
 function renderSimActivity(){
+  renderDashActivity();
   const box = $('#sim-activity');
   if(!box) return;
   if(!state.activity.length){
@@ -998,6 +1146,7 @@ function renderSimActivity(){
           <b class="sim-act-who">${esc(simMobileName(item.wa))}</b>
           <span class="sim-act-dir">${item.inbound?'to':'from'} ${esc(simBusinessName(item.phoneId))}</span>
           <span class="sim-act-type">${esc(item.type)}</span>
+          ${item.template?`<span class="sim-act-tpl" title="Template name">${esc(item.template)}</span>`:''}
           <span class="sim-act-time">${esc(new Date(item.at).toLocaleTimeString())}</span>
         </div>
         <div class="sim-act-body">${esc(item.text || '(no body)')}</div>
@@ -1006,6 +1155,372 @@ function renderSimActivity(){
     + (state.actMore
       ? `<div class="sim-more-wrap"><button type="button" class="btn secondary small" id="sim-more">Load older messages</button></div>`
       : '');
+}
+
+/* ===== dashboard quick access =====
+   The simulator is what this tool is mostly opened for, so the three things
+   people went looking for - what just happened, whether webhooks are landing,
+   and which numbers exist - are on the landing page too. They reuse the
+   simulator's own state, so nothing extra is fetched to fill them. */
+const DASH_FEED_LIMIT = 12;
+
+/* The dashboard copy carries its own class name. Sharing `.sim-act` made the
+   selector ambiguous across two feeds - the hidden dashboard row won, and every
+   query for "the activity row" resolved to something that is not on screen. */
+function activityRowHtml(item, compact){
+  const cls = compact ? 'dash-act compact' : 'sim-act';
+  return `
+    <button type="button" class="${cls} ${item.inbound?'inbound':'outbound'}"
+            data-open-wa="${esc(item.wa)}" data-open-business="${esc(item.phoneId)}"
+            title="Open this conversation in the phone simulator">
+      <span class="sim-act-rail" aria-hidden="true"></span>
+      <div class="sim-act-main">
+        <div class="sim-act-row">
+          <b class="sim-act-who">${esc(simMobileName(item.wa))}</b>
+          <span class="sim-act-dir">${item.inbound?'to':'from'} ${esc(simBusinessName(item.phoneId))}</span>
+          <span class="sim-act-type">${esc(item.type)}</span>
+          ${item.template?`<span class="sim-act-tpl" title="Template name">${esc(item.template)}</span>`:''}
+          <span class="sim-act-time">${esc(new Date(item.at).toLocaleTimeString())}</span>
+        </div>
+        <div class="sim-act-body">${esc(item.text || '(no body)')}</div>
+      </div>
+    </button>`;
+}
+
+function renderDashActivity(){
+  const box = $('#dash-activity');
+  if(!box) return;
+  if(!state.activity.length){
+    box.innerHTML = '<div class="empty">Nothing yet. Any message to or from a test customer appears here as it happens.</div>';
+    return;
+  }
+  box.innerHTML = state.activity.slice(0, DASH_FEED_LIMIT).map(item=>activityRowHtml(item, true)).join('');
+}
+
+function renderNotifications(){
+  const stats = state.webhookStats;
+  const box = $('#dash-hook-stats');
+  if(box){
+    box.innerHTML = !stats ? '' : `
+      <div class="hook-stat"><small>Total</small><b>${Number(stats.total||0).toLocaleString()}</b></div>
+      <div class="hook-stat ok"><small>Delivered</small><b>${Number(stats.delivered||0).toLocaleString()}</b></div>
+      <div class="hook-stat warn"><small>Unrouted</small><b>${Number(stats.unrouted||0).toLocaleString()}</b></div>
+      <div class="hook-stat bad"><small>Failed</small><b>${Number(stats.failed||0).toLocaleString()}</b></div>`;
+  }
+  const list = $('#dash-notifications');
+  if(!list) return;
+  // Its own small window, not the webhook page's: the dashboard needs eight
+  // rows, and making it wait for (or trigger) a 200-row page would put the
+  // delivery log back on the critical path this change just took it off.
+  const items = (state.dashHooks && state.dashHooks.length ? state.dashHooks : (state.webhooks||[])).slice(0, 8);
+  if(!items.length){
+    list.innerHTML = stats && stats.total
+      ? '<div class="empty">Loading recent deliveries…</div>'
+      : '<div class="empty">No webhook events yet. Send a message to generate one.</div>';
+    return;
+  }
+  list.innerHTML = items.map(w=>{
+    const facets = webhookFacets(w), value = facets.value;
+    const subject = value.messages?.[0] ? `Inbound ${value.messages[0].type||'message'}`
+      : value.statuses?.[0] ? `Message ${value.statuses[0].status}` : (w.event_type||'Event');
+    const tone = w.status==='delivered' ? 'ok' : w.status==='failed' ? 'bad' : 'warn';
+    return `<button type="button" class="dash-hook ${tone}" data-page="webhooks">
+      <span class="dash-hook-dot"></span>
+      <span class="dash-hook-main">
+        <span class="dash-hook-title">${esc(subject)}</span>
+        <span class="dash-hook-sub">${esc(w.status)}${w.last_status_code?' · HTTP '+esc(w.last_status_code):''} · ${esc(facets.phone||facets.waba||'—')}</span>
+      </span>
+      <span class="dash-hook-time">${esc(new Date(w.created_at).toLocaleTimeString())}</span>
+    </button>`;
+  }).join('');
+}
+
+function setDashUserFilter(value){ state.dashFilter = value; renderDashNumbers(); }
+
+function renderDashNumbers(){
+  const box = $('#dash-numbers');
+  if(!box) return;
+  const query = (state.dashFilter||'').trim().toLowerCase();
+  const all = state.users || [];
+  if(!all.length){
+    box.innerHTML = '<div class="empty">No test numbers yet. Add one, or message any number and it is created automatically.</div>';
+    return;
+  }
+  // Same order as the simulator's own roster, so the two never disagree:
+  // favourites, then unread, then most recently active, then by name.
+  const shown = all.filter(u => userMatches(u, query)).sort((a,b)=>
+    Number(!!b.starred)-Number(!!a.starred)
+    || unreadFor(b.wa_id)-unreadFor(a.wa_id)
+    || lastSeenFor(b.wa_id)-lastSeenFor(a.wa_id)
+    || String(a.display_name||'').localeCompare(String(b.display_name||'')));
+  if(!shown.length){
+    box.innerHTML = `<div class="empty">No number matches "${esc(query)}".</div>`;
+    return;
+  }
+  box.innerHTML = shown.map(u=>{
+    const color = u.color || '#25D366';
+    const count = unreadFor(u.wa_id);
+    return `<div class="dash-number ${u.starred?'starred':''}">
+      <button type="button" class="dash-number-open" data-open-wa="${esc(u.wa_id)}"
+              title="Open ${esc(u.display_name||u.wa_id)} in the phone simulator">
+        <span class="avatar wa" style="background:${esc(color)}1f;color:${esc(color)}">${esc(initials(u.display_name))}</span>
+        <span class="dash-number-main">
+          <span class="dash-number-name">${esc(u.display_name)}${u.auto_created?'<span class="badge gray">auto</span>':''}</span>
+          <span class="dash-number-id">+${esc(u.wa_id)}</span>
+        </span>
+        ${count?`<span class="dash-unread">${count>99?'99+':count}</span>`:''}
+      </button>
+      <button type="button" class="dash-number-star ${u.starred?'on':''}" data-star-wa="${esc(u.wa_id)}"
+              aria-pressed="${!!u.starred}" title="${u.starred?'Remove from favourites':'Add to favourites'}"
+              aria-label="${u.starred?'Remove from favourites':'Add to favourites'}"><svg class="ico"><use href="#i-star"/></svg></button>
+    </div>`;
+  }).join('');
+}
+
+/* Favourite a test number. Persisted on the customer so the simulator's roster
+   and this list stay in the same order. */
+async function toggleStar(wa){
+  const user = (state.users||[]).find(u=>u.wa_id===wa);
+  if(!user) return;
+  const next = !user.starred;
+  user.starred = next;
+  renderDashNumbers(); renderUsers();
+  try{
+    await req(`/_sandbox/phones/${encodeURIComponent(wa)}`,{
+      method:'PATCH', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({starred: next}),
+    });
+  }catch{
+    user.starred = !next;
+    renderDashNumbers(); renderUsers();
+    toast('Could not update favourites', true);
+  }
+}
+
+document.addEventListener('click', event=>{
+  const star = event.target.closest('[data-star-wa]');
+  if(!star) return;
+  event.preventDefault(); event.stopPropagation();
+  toggleStar(star.dataset.starWa);
+});
+
+/* The two values every integration attempt needs, beside the endpoint they are
+   used with. Masked until asked for: the console is often on a shared screen. */
+function renderQuickCreds(){
+  const box = $('#quick-creds');
+  if(!box) return;
+  const token = state.apps[0]?.access_token || state.config.access_token || '';
+  const sender = state.businesses[0]?.phone_numbers[0]?.id || 'PHONE_LOCAL';
+  const waba = state.businesses[0]?.id || 'WABA_LOCAL';
+  const rows = [
+    {label:'Access token', value:token, secret:true},
+    {label:'Phone-number ID', value:sender},
+    {label:'WhatsApp Business Account', value:waba},
+  ];
+  box.innerHTML = rows.map(row=>`
+    <div class="quick-cred">
+      <small>${esc(row.label)}</small>
+      <code class="${row.secret?'masked':''}" data-secret="${row.secret?'1':''}">${esc(row.secret ? maskToken(row.value) : row.value)}</code>
+      ${row.secret?`<button class="btn ghost small icon-only" title="Show or hide" aria-label="Show or hide"
+         onclick="toggleSecret(this)"><svg><use href="#i-search"/></svg></button>`:''}
+      <button class="btn secondary small icon-only" title="Copy ${esc(row.label)}" aria-label="Copy ${esc(row.label)}"
+        onclick="copyText(${JSON.stringify(row.value)})"><svg><use href="#i-copy"/></svg></button>
+    </div>`).join('');
+}
+
+function maskToken(value){
+  const text = String(value||'');
+  return text.length > 12 ? text.slice(0,6) + '•'.repeat(12) + text.slice(-4) : text;
+}
+
+function toggleSecret(button){
+  const code = button.parentElement.querySelector('code');
+  const token = state.apps[0]?.access_token || state.config.access_token || '';
+  const hidden = code.classList.toggle('masked');
+  code.textContent = hidden ? maskToken(token) : token;
+}
+
+/* ===== cross-number analytics =====
+   The per-chat view answers "when did this conversation happen". This answers
+   the question it cannot: which numbers got what, across the whole sandbox.
+   One aggregate request, rendered identically into the dashboard and the
+   simulator page, so the two can never drift apart. */
+const DAY_START = 6, DAY_END = 18;      // local hours counted as daylight
+const ANALYTICS_TARGETS = ['dash', 'sim'];
+
+function hourLabel(hour){
+  const suffix = hour < 12 ? 'am' : 'pm';
+  return (hour % 12 === 0 ? 12 : hour % 12) + suffix;
+}
+function barHeight(count, peak){
+  // A non-zero bucket always keeps a visible sliver, or a quiet hour beside a
+  // busy one reads as no data rather than as little data.
+  return count ? Math.max(4, Math.round((count / peak) * 100)) : 0;
+}
+function shortDate(day){
+  return new Date(day + 'T00:00:00').toLocaleDateString([], {month:'short', day:'numeric'});
+}
+
+function analyticsHourHistogram(byHour){
+  const peak = Math.max(...byHour, 1);
+  return `
+    <div class="an-card">
+      <div class="an-card-head"><b>By hour of day</b>
+        <span class="an-legend"><i class="sw day"></i>day<i class="sw night"></i>night</span></div>
+      <div class="an-hbars">${byHour.map((count,hour)=>{
+        const night = hour < DAY_START || hour >= DAY_END;
+        return `<div class="an-hb ${night?'night':'day'}" style="--h:${barHeight(count,peak)}%"
+          title="${hourLabel(hour)} · ${count} message${count===1?'':'s'}"><span></span></div>`;
+      }).join('')}</div>
+      <div class="an-axis"><span>12am</span><span>6am</span><span>12pm</span><span>6pm</span><span>11pm</span></div>
+    </div>`;
+}
+
+function analyticsDayTimeline(byDay){
+  if(!byDay.length) return '';
+  const peak = Math.max(...byDay.map(d=>d.total), 1);
+  // Capped so a long-lived sandbox does not render hundreds of unreadable slivers.
+  const shown = byDay.slice(-90);
+  return `
+    <div class="an-card">
+      <div class="an-card-head"><b>Messages per day</b>
+        <span class="an-legend"><i class="sw in"></i>from customers<i class="sw out"></i>from business</span></div>
+      <div class="an-timeline">${shown.map(day=>`
+        <div class="an-tl" title="${esc(shortDate(day.day))} · ${day.total} message${day.total===1?'':'s'} (${day.inbound} in, ${day.outbound} out)">
+          <div class="an-tl-stack" style="--h:${barHeight(day.total,peak)}%">
+            <span class="an-in" style="flex:${day.inbound||0}"></span>
+            <span class="an-out" style="flex:${day.outbound||0}"></span>
+          </div></div>`).join('')}</div>
+      <div class="an-axis"><span>${esc(shortDate(shown[0].day))}</span><span>${esc(shortDate(shown[shown.length-1].day))}</span></div>
+      ${byDay.length > shown.length ? `<div class="an-note">Showing the most recent ${shown.length} of ${byDay.length} days.</div>` : ''}
+    </div>`;
+}
+
+function analyticsNumberTable(customers, total){
+  if(!customers.length) return '';
+  const peak = Math.max(...customers.map(c=>c.total), 1);
+  return `
+    <div class="an-card">
+      <div class="an-card-head"><b>Busiest test numbers</b><span class="an-legend">${customers.length} shown</span></div>
+      <div class="an-rows">${customers.map(c=>`
+        <button type="button" class="an-row" data-open-wa="${esc(c.wa_id)}"
+                title="Open ${esc(c.display_name||c.wa_id)} in the phone simulator">
+          <span class="an-av" style="background:${esc(c.color||'#25D366')}1f;color:${esc(c.color||'#25D366')}">${esc(initials(c.display_name||c.wa_id))}</span>
+          <span class="an-row-main">
+            <span class="an-row-name">${esc(c.display_name||c.wa_id)}${c.starred?'<svg class="ico an-star"><use href="#i-star"/></svg>':''}</span>
+            <span class="an-row-sub">+${esc(c.wa_id)} · ${c.businesses||0} sender${c.businesses===1?'':'s'}${c.last_at?' · '+esc(new Date(c.last_at).toLocaleString()):''}</span>
+          </span>
+          <span class="an-split" title="${c.inbound||0} sent by the customer, ${c.outbound||0} sent by the business">
+            <i class="an-in" style="width:${total?Math.round((c.inbound||0)/peak*100):0}%"></i>
+            <i class="an-out" style="width:${total?Math.round((c.outbound||0)/peak*100):0}%"></i>
+          </span>
+          <span class="an-row-value">${Number(c.total||0).toLocaleString()}</span>
+        </button>`).join('')}</div>
+    </div>`;
+}
+
+function analyticsSenderTable(senders){
+  if(!senders.length) return '';
+  const peak = Math.max(...senders.map(s=>s.total), 1);
+  return `
+    <div class="an-card">
+      <div class="an-card-head"><b>By business sender</b></div>
+      <div class="an-rows">${senders.map(s=>`
+        <div class="an-row static">
+          <span class="an-av biz">${esc(initials(s.verified_name))}</span>
+          <span class="an-row-main">
+            <span class="an-row-name">${esc(s.verified_name)}</span>
+            <span class="an-row-sub">+${esc(s.display_phone_number)} · ${s.customers||0} customer${s.customers===1?'':'s'}</span>
+          </span>
+          <span class="an-meter"><i style="width:${Math.round((s.total||0)/peak*100)}%"></i></span>
+          <span class="an-row-value">${Number(s.total||0).toLocaleString()}</span>
+        </div>`).join('')}</div>
+    </div>`;
+}
+
+function analyticsPairMap(pairs){
+  if(!pairs.length) return '';
+  const peak = Math.max(...pairs.map(p=>p.total), 1);
+  return `
+    <div class="an-card">
+      <div class="an-card-head"><b>Busiest pairings</b>
+        <span class="an-legend">which number talks to which sender</span></div>
+      <div class="an-rows">${pairs.map(pair=>`
+        <button type="button" class="an-row pair" data-open-wa="${esc(pair.wa_id)}" data-open-business="${esc(pair.phone_number_id)}"
+                title="Open this conversation in the phone simulator">
+          <span class="an-pair">
+            <b>${esc(simMobileName(pair.wa_id))}</b>
+            <svg class="ico an-arrow"><use href="#i-chevron"/></svg>
+            <b>${esc(simBusinessName(pair.phone_number_id))}</b>
+          </span>
+          <span class="an-meter"><i style="width:${Math.round((pair.total||0)/peak*100)}%"></i></span>
+          <span class="an-row-value">${Number(pair.total||0).toLocaleString()}</span>
+        </button>`).join('')}</div>
+    </div>`;
+}
+
+function renderAnalytics(){
+  const data = state.analytics;
+  for(const prefix of ANALYTICS_TARGETS){
+    const box = $('#'+prefix+'-analytics'), range = $('#'+prefix+'-range');
+    if(!box) continue;
+    if(!data){ box.innerHTML = skeletonRows(3); if(range) range.textContent=''; continue; }
+    if(!data.total){
+      box.innerHTML = '<div class="empty">No messages yet. Send one and the traffic breakdown appears here.</div>';
+      if(range) range.textContent = '';
+      continue;
+    }
+    const peakHour = data.by_hour.indexOf(Math.max(...data.by_hour));
+    const nightTotal = data.by_hour.reduce((sum,count,hour)=>
+      sum + ((hour < DAY_START || hour >= DAY_END) ? count : 0), 0);
+    const activeNumbers = data.customers.filter(c=>c.total>0).length;
+    const days = Math.max(1, data.by_day.length);
+    if(range){
+      const fmt = value => new Date(value).toLocaleDateString([], {month:'short', day:'numeric'});
+      range.textContent = fmt(data.first_at) + ' – ' + fmt(data.last_at);
+    }
+    box.innerHTML = `
+      <div class="an-tiles">
+        <div class="an-tile"><small>Messages</small><strong>${Number(data.total).toLocaleString()}</strong></div>
+        <div class="an-tile"><small>From customers</small><strong>${Number(data.inbound).toLocaleString()}</strong></div>
+        <div class="an-tile"><small>From business</small><strong>${Number(data.outbound).toLocaleString()}</strong></div>
+        <div class="an-tile"><small>Active numbers</small><strong>${activeNumbers}</strong></div>
+        <div class="an-tile"><small>Busiest hour</small><strong>${esc(hourLabel(peakHour))}</strong></div>
+        <div class="an-tile"><small>Per active day</small><strong>${(data.total/days).toFixed(1)}</strong></div>
+        <div class="an-tile"><small>Overnight</small><strong>${Math.round(nightTotal/data.total*100)}%</strong></div>
+      </div>
+      <div class="an-grid">
+        ${analyticsHourHistogram(data.by_hour)}
+        ${analyticsDayTimeline(data.by_day)}
+      </div>
+      <div class="an-grid">
+        ${analyticsNumberTable(data.customers, data.total)}
+        ${analyticsSenderTable(data.senders)}
+      </div>
+      ${analyticsPairMap(data.pairs)}`;
+  }
+}
+
+let analyticsPending = null;
+async function loadAnalytics(force){
+  // Coalesced: the dashboard and the simulator page share one payload, and a
+  // burst of live messages must not turn into a burst of aggregate queries.
+  if(analyticsPending && !force) return analyticsPending;
+  // getTimezoneOffset() counts minutes behind UTC; negate for "minutes to add".
+  const offset = -new Date().getTimezoneOffset();
+  analyticsPending = req(`/_sandbox/analytics?tz_offset=${offset}&top=12`)
+    .then(d=>{ state.analytics = d; renderAnalytics(); })
+    .catch(()=>{})
+    .finally(()=>{ analyticsPending = null; });
+  return analyticsPending;
+}
+
+/* Live traffic makes the aggregate stale, but re-querying per message would
+   cost more than the panel is worth, so refreshes are trailing and throttled. */
+let analyticsRefresh = null;
+function scheduleAnalyticsRefresh(){
+  if(analyticsRefresh) return;
+  analyticsRefresh = setTimeout(()=>{ analyticsRefresh = null; loadAnalytics(true); }, 4000);
 }
 
 /* Seed the list on first open so it is not empty before anything new arrives. */
@@ -1017,6 +1532,7 @@ function activityEntry(m){
     inbound: m.direction === 'inbound',
     type: m.message_type,
     text: simSummary(m),
+    template: simTemplateName(m),
     at: m.created_at,
   };
 }
@@ -1056,7 +1572,10 @@ async function loadMoreSimActivity(){
    the first business, which is what openPhoneTabFor falls back to. */
 document.addEventListener('click', event=>{
   if(event.target.closest('#sim-more')){ loadMoreSimActivity(); return; }
-  const row = event.target.closest('.sim-act[data-open-wa]');
+  if(event.target.closest('#hook-more')){ loadMoreWebhooks(); return; }
+  // Any row carrying a wa_id opens that conversation, whether it is in the
+  // simulator feed, the dashboard feed or the dashboard number list.
+  const row = event.target.closest('[data-open-wa]');
   if(!row) return;
   const wa = row.dataset.openWa;
   const biz = row.dataset.openBusiness || state.businesses[0]?.phone_numbers[0]?.id || '';
@@ -1064,6 +1583,11 @@ document.addEventListener('click', event=>{
 });
 
 function simLive(live){
+  const dash = $('#dash-live');
+  if(dash){
+    dash.classList.toggle('on', !!live);
+    dash.title = live ? 'Live' : 'Reconnecting';
+  }
   const pill = $('#sim-live');
   if(!pill) return;
   pill.classList.toggle('on', !!live);
@@ -1118,11 +1642,14 @@ async function handleConsoleEvent(data){
       inbound,
       type: message.message_type || message.type || 'text',
       text: simSummary(message),
+      template: simTemplateName(message),
       at: message.created_at || Date.now(),
     });
     // The dashboard message counter and the "Send a message" checklist item
     // both read state.messages, so it has to grow as messages arrive.
     state.messages.unshift(message);
+    bumpMessageCount(1);
+    scheduleAnalyticsRefresh();
     await loadSimUnread();
     renderUsers();
     renderMetrics();
