@@ -22,7 +22,7 @@ from .clock import parse_datetime, parse_duration
 from .config import Settings
 from .db import Store
 from .identity import generated_color, generated_name
-from .engine import Engine, normalize_phone
+from .engine import Engine, location_error, normalize_phone
 from .errors import graph_error
 from .template_validation import validate_template
 from .web_console import asset, WEB_DIR
@@ -410,6 +410,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             media = store.one("SELECT phone_number_id FROM media WHERE id=?", (payload["id"],))
             if not media or media["phone_number_id"] != phone_number_id:
                 return JSONResponse({"error": "The referenced media ID does not exist for this phone number"}, status_code=400)
+        # The phone is a simulated device, not a trusted one: a bad pair of
+        # coordinates typed into the location sheet would otherwise reach the
+        # integration inside a webhook that claims to be the real Meta shape.
+        if message_type == "location" and (failure := location_error(payload)):
+            return JSONResponse({"error": failure[1]}, status_code=400)
         try:
             return await engine.receive_inbound(
                 phone_number_id, wa_id, message_type, payload, body.get("context")
@@ -757,11 +762,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         HTTP result and the error, so a failure is attributable without digging
         through the whole delivery log.
 
-        Deliveries are matched by scanning for the message id inside the stored
-        request body. That is a LIKE scan, so it is bounded two ways: only
-        deliveries at or after the message's own timestamp are considered (a
-        webhook about a message cannot predate it) and at most 25 are returned.
-        The created_at index makes that range the only part actually walked.
+        Deliveries are matched on the message_id column first. An inbound
+        message's own webhook carries it, so that arm is exact and needs no
+        scan. Status-event webhooks deliberately pass message_id=None, and rows
+        written before the column existed have it NULL, so a body scan still
+        backs it up for those.
+
+        That scan MUST cast request_body to text. The column is a BLOB, and
+        SQLite's LIKE returns false for a BLOB operand on some builds - 3.40 in
+        python:3.12-slim does, 3.50 locally does not. Without the cast the whole
+        clause silently matched nothing in production, and every message with a
+        failed webhook reported "no webhook produced for this message": the
+        sandbox blamed itself for the receiver being down.
+
+        The scan is bounded two ways: only deliveries at or after the message's
+        own timestamp are considered (a webhook about a message cannot predate
+        it) and at most 25 are returned. The created_at index makes that range
+        the only part actually walked.
         """
         message = store.one("SELECT * FROM messages WHERE id=?", (message_id,))
         if not message:
@@ -790,12 +807,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         deliveries = []
         for row in store.all(
             "SELECT id, event_type, destination_url, status, attempt_count, last_status_code,"
-            " last_error, created_at, delivered_at FROM webhook_deliveries"
-            " WHERE created_at >= ? AND request_body LIKE ?"
+            " last_error, last_response_body, created_at, delivered_at FROM webhook_deliveries"
+            " WHERE created_at >= ?"
+            " AND (message_id = ? OR CAST(request_body AS TEXT) LIKE ?)"
             " ORDER BY created_at LIMIT 25",
-            (created_at, f"%{message_id}%"),
+            (created_at, message_id, f"%{message_id}%"),
         ):
             item = dict(row)
+            if isinstance(item.get("last_response_body"), bytes):
+                item["last_response_body"] = item["last_response_body"].decode("utf-8", errors="replace")
             item["queued_delay_ms"] = delay_ms(row["created_at"])
             item["delivered_delay_ms"] = delay_ms(row["delivered_at"])
             item["attempts"] = rows(store.all(
@@ -866,6 +886,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         limit: int = Query(100, ge=1, le=500),
         before: str | None = Query(None, description="Delivery id to page backwards from."),
         status: str | None = Query(None, description="Only deliveries in this status."),
+        message_id: str | None = Query(None, description="Only deliveries carrying this message."),
+        event_type: str | None = Query(None, description="Only deliveries of this event type."),
+        since: str | None = Query(None, description="Only deliveries created at or after this ISO timestamp."),
     ):
         """Newest deliveries first, paged the same way messages are.
 
@@ -888,6 +911,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if status:
             clauses.append("status=?")
             values.append(status)
+        if message_id:
+            # Both arms, for the same reason sandbox_message_diagnostics needs
+            # both: status-event webhooks carry the id only in their body.
+            clauses.append("(message_id = ? OR CAST(request_body AS TEXT) LIKE ?)")
+            values.extend((message_id, f"%{message_id}%"))
+        if event_type:
+            clauses.append("event_type=?")
+            values.append(event_type)
+        if since:
+            clauses.append("created_at >= ?")
+            values.append(since)
         if anchor:
             clauses.append("(created_at, rowid) < (?, ?)")
             values.extend(anchor)
@@ -927,6 +961,136 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "data": data,
             "has_more": has_more,
             "next_before": data[-1]["id"] if data and has_more else None,
+        }
+
+    @app.get("/_sandbox/probe")
+    def sandbox_probe(window: int = Query(200, ge=1, le=2000)):
+        """Diagnose the whole sandbox in one call.
+
+        Written from the questions a real incident needed answered, each of which
+        previously took its own request and some arithmetic: is anything
+        subscribed, is delivery succeeding right now, what exactly is it failing
+        with, and are inbound events reaching the integration at all.
+
+        `findings` is the point. Counters tell you something is wrong only if you
+        already know what healthy looks like; a finding names the problem and the
+        evidence behind it in one line.
+
+        Rates are computed over the last `window` deliveries rather than all
+        time, because a sandbox left running for weeks averages a current outage
+        into invisibility.
+        """
+        clock = store.one("SELECT frozen_at FROM clock_state WHERE singleton=1")
+        frozen = bool(clock and clock["frozen_at"])
+        subscriptions = rows(store.all("SELECT * FROM webhook_subscriptions"))
+        active = [item for item in subscriptions if item["active"]]
+
+        totals = {
+            row["status"]: row["total"]
+            for row in store.all(
+                "SELECT status, COUNT(*) AS total FROM webhook_deliveries GROUP BY status"
+            )
+        }
+        recent = rows(store.all(
+            "SELECT status, last_status_code, last_error, created_at FROM webhook_deliveries"
+            " ORDER BY created_at DESC, rowid DESC LIMIT ?", (window,),
+        ))
+        failed = [item for item in recent if item["status"] == "failed"]
+        by_code: dict[str, int] = {}
+        by_error: dict[str, int] = {}
+        for item in failed:
+            code = str(item["last_status_code"]) if item["last_status_code"] else "no response"
+            by_code[code] = by_code.get(code, 0) + 1
+            reason = (item["last_error"] or "(none recorded)")[:120]
+            by_error[reason] = by_error.get(reason, 0) + 1
+
+        # An inbound message sits at "sent" until a callback returns 2xx, so this
+        # count is exactly "events the integration never acknowledged".
+        unconfirmed = store.one(
+            "SELECT COUNT(*) AS total FROM messages"
+            " WHERE direction='inbound' AND status='sent'"
+        )["total"]
+        message_totals: dict[str, int] = {}
+        for row in store.all(
+            "SELECT direction, status, COUNT(*) AS total FROM messages"
+            " GROUP BY direction, status"
+        ):
+            message_totals[row["direction"] + "/" + row["status"]] = row["total"]
+
+        findings: list[dict[str, Any]] = []
+
+        def finding(severity: str, code: str, detail: str) -> None:
+            findings.append({"severity": severity, "code": code, "detail": detail})
+
+        if not subscriptions:
+            finding("error", "no_subscriptions",
+                    "Nothing is subscribed, so every event is stored unrouted and no "
+                    "integration is ever told about it.")
+        elif not active:
+            finding("error", "no_active_subscription",
+                    f"{len(subscriptions)} subscription(s) exist but none is active.")
+
+        with_phones = {row["waba_id"] for row in store.all("SELECT DISTINCT waba_id FROM phone_numbers")}
+        covered = {item["waba_id"] for item in active}
+        for waba in sorted(with_phones - covered):
+            finding("warn", "waba_unsubscribed",
+                    f"{waba} has phone numbers but no active subscription, so its events go nowhere.")
+
+        if recent:
+            rate = len(failed) / len(recent)
+            worst = max(by_error, key=lambda key: by_error[key]) if by_error else ""
+            if rate >= 0.5:
+                finding("error", "delivery_failing",
+                        f"{len(failed)} of the last {len(recent)} deliveries failed "
+                        f"({rate:.0%}). Leading cause: {worst!r}.")
+            elif rate >= 0.1:
+                finding("warn", "delivery_degraded",
+                        f"{len(failed)} of the last {len(recent)} deliveries failed ({rate:.0%}).")
+        if by_code.get("429"):
+            finding("warn", "rate_limited",
+                    f"{by_code['429']} recent deliveries were rejected with HTTP 429; "
+                    "the receiver is rate limiting this sandbox.")
+        if by_code.get("no response"):
+            finding("warn", "receiver_unreachable",
+                    f"{by_code['no response']} recent deliveries got no HTTP response at "
+                    "all (timeout or refused connection).")
+        if unconfirmed:
+            finding("warn", "unconfirmed_inbound",
+                    f"{unconfirmed} inbound message(s) are still at one tick: no callback "
+                    "has acknowledged them with a 2xx.")
+        if frozen:
+            finding("info", "clock_frozen",
+                    f"The sandbox clock is frozen at {clock['frozen_at']}, so timestamps "
+                    "are not wall time.")
+        if not findings:
+            finding("ok", "healthy", "No delivery or subscription problems detected.")
+
+        return {
+            "now": store.now().isoformat(),
+            "mode": settings.mode,
+            "clock_frozen": frozen,
+            "findings": findings,
+            "subscriptions": {
+                "total": len(subscriptions),
+                "active": len(active),
+                "callbacks": [
+                    {"waba_id": item["waba_id"], "callback_url": item["callback_url"],
+                     "active": bool(item["active"])}
+                    for item in subscriptions
+                ],
+            },
+            "webhooks": {
+                "totals": totals,
+                "window": len(recent),
+                "window_failed": len(failed),
+                "failures_by_status_code": by_code,
+                "failures_by_error": by_error,
+                "latest_at": recent[0]["created_at"] if recent else None,
+            },
+            "messages": {
+                "by_direction_and_status": message_totals,
+                "unconfirmed_inbound": unconfirmed,
+            },
         }
 
     @app.delete("/_sandbox/webhooks")

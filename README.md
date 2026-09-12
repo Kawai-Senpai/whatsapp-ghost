@@ -56,7 +56,7 @@ container:
 
 | | Capability | What it lets you test |
 |:--:|---|---|
-| 💬 | **Messages** | Text, media, templates, replies, and realistic `wamid` values |
+| 💬 | **Messages** | Text, media, templates, locations, replies, and realistic `wamid` values |
 | 📱 | **Phone simulators** | Customer conversations in the browser or terminal |
 | 🪝 | **Webhooks** | Signed payloads, delivery history, inspection, and replay |
 | ✅ | **Delivery lifecycle** | `sent`, `delivered`, `read`, and `failed` status transitions |
@@ -66,7 +66,9 @@ container:
 | 🎛️ | **Testing modes** | Strict and loose validation for different integration stages |
 | 🛡️ | **Template validation** | Meta's own shape rules, checked at submission |
 | 📡 | **Live console** | New messages appear without a refresh, across every phone |
+| 📍 | **Location sharing** | Share a pin from the simulator, or send one over the Graph API, with Meta's exact payload |
 | 🔍 | **Message diagnostics** | Hover any message for its status hops, delays, and every webhook it produced |
+| 🩺 | **One-call probe** | `/_sandbox/probe` names what is wrong: dead receiver, rate limit, nothing subscribed |
 | 📊 | **Traffic analytics** | Per-chat and cross-number histograms: which number got what, and when |
 | 🧹 | **Chat and history clearing** | Clear one chat, every chat on a number, or the whole webhook log |
 | ⭐ | **Favourites and roster tools** | Star, search, add and edit test numbers without leaving the simulator |
@@ -383,6 +385,101 @@ A failure returns a Meta-style error naming the offending component.
 four consecutive spaces. This mirrors Meta and is the usual cause of a send
 that looks well-formed but is refused.
 
+## 📍 Location sharing
+
+Locations travel in both directions with the payload Meta uses, so a client that
+parses Ghost parses production unchanged.
+
+From your application:
+
+```bash
+curl -X POST http://127.0.0.1:8787/v26.0/PHONE_LOCAL/messages \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"messaging_product":"whatsapp","to":"15550002001","type":"location",
+       "location":{"latitude":18.9220,"longitude":72.8347,
+                   "name":"Gateway of India","address":"Apollo Bandar, Colaba"}}'
+```
+
+From the simulator, press the 📍 button beside the paperclip. The sheet takes a
+latitude and longitude with an optional name and address, and ships three
+presets so you do not have to invent coordinates. Both directions render as a
+map bubble with the name over the address, and open OpenStreetMap when tapped.
+The map plate is drawn inline rather than fetched, so it still renders with no
+network: a sandbox built to run offline should not show a broken image.
+
+The inbound webhook is the documented shape, with nothing added:
+
+```json
+{"messages":[{"from":"15550002001","id":"wamid.ie7MUT...","timestamp":"1789194317",
+  "type":"location","location":{"latitude":18.922,"longitude":72.8347,
+  "name":"Gateway of India","address":"Apollo Bandar, Colaba"}}]}
+```
+
+`name` and `address` are omitted when absent rather than sent as empty strings,
+matching Meta. Coordinates are range checked, because a swapped latitude and
+longitude is the usual way a location send goes wrong and `118.9` is not a
+latitude:
+
+| Payload | Error |
+|---|---|
+| no `latitude` | `131008` Parameter location.latitude is required. |
+| `latitude: 118.9` | `131009` Parameter location.latitude must be between -90 and 90. |
+| `address` with no `name` | `131008` Parameter location.name is required when location.address is given. |
+
+The last one is Ghost being stricter than the wire on purpose: a client renders
+`name` as the bubble title and `address` beneath it, so an address with no name
+has nothing to hang under and silently disappears.
+
+<a id="probe"></a>
+
+## 🩺 Probing a running sandbox
+
+`GET /_sandbox/probe` answers "why is my integration not seeing anything?" in
+one request. Counters only help if you already know what healthy looks like, so
+the useful part is `findings`: each names a problem and the evidence for it.
+
+```bash
+curl -s http://127.0.0.1:8787/_sandbox/probe | jq .findings
+```
+
+```json
+[{"severity":"error","code":"delivery_failing",
+  "detail":"4 of the last 8 deliveries failed (50%). Leading cause: 'ConnectError: All connection attempts failed'."},
+ {"severity":"warn","code":"receiver_unreachable",
+  "detail":"4 recent deliveries got no HTTP response at all (timeout or refused connection)."},
+ {"severity":"warn","code":"unconfirmed_inbound",
+  "detail":"5 inbound message(s) are still at one tick: no callback has acknowledged them with a 2xx."}]
+```
+
+Findings it raises: `no_subscriptions`, `no_active_subscription`,
+`waba_unsubscribed`, `delivery_failing`, `delivery_degraded`, `rate_limited`,
+`receiver_unreachable`, `unconfirmed_inbound`, `clock_frozen`, `healthy`.
+
+The body also carries delivery totals, failures grouped by HTTP status code and
+by error text, and message counts by direction and status. Rates are measured
+over the last `window` deliveries (default 200, `?window=` to change it) rather
+than all time, because a sandbox left running for weeks averages a current
+outage into invisibility.
+
+`unconfirmed_inbound` is worth knowing: an inbound message stays at one tick
+until a callback returns 2xx, so that count is exactly the number of events your
+integration never acknowledged.
+
+To go from a symptom to a single message, the delivery log filters:
+
+```bash
+# every webhook that carried one message, status events included
+curl -s "http://127.0.0.1:8787/_sandbox/webhooks?message_id=wamid.ABC"
+
+# only failures, only since a point in time
+curl -s "http://127.0.0.1:8787/_sandbox/webhooks?status=failed&since=2026-09-12T05:00:00+00:00"
+```
+
+and `GET /_sandbox/messages/{id}/diagnostics` gives one message's status hops,
+their delays, and every webhook it produced with the HTTP result, the error, and
+the receiver's response body. That is what the simulator shows when you hover a
+bubble.
+
 ## ⏱️ Time travel and multiple phones
 
 ```powershell
@@ -445,6 +542,8 @@ know Ghost is not Meta.
 | `GET` | `/_sandbox/conversations` | conversation list |
 | `GET` | `/_sandbox/unread` | unread counts |
 | `GET` | `/_sandbox/media/{media_id}` | download bytes |
+| `GET` | `/_sandbox/probe` | **diagnose the sandbox in one call** |
+| `GET` | `/_sandbox/messages/{id}/diagnostics` | one message: status hops and every webhook it produced |
 | `GET` | `/_sandbox/webhooks` | delivery log with every attempt |
 | `POST` | `/_sandbox/webhooks/{delivery_id}/replay` | re-deliver one |
 | `GET` | `/_sandbox/webhook-subscriptions` | who is subscribed |

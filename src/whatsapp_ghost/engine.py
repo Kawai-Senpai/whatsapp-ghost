@@ -25,6 +25,35 @@ SUPPORTED_MESSAGE_TYPES = {
 }
 
 
+def location_error(location: Any) -> tuple[int, str] | None:
+    """Validate a Cloud API location payload, returning (code, message).
+
+    Meta requires latitude and longitude and treats name and address as
+    optional, with one catch: a client renders name as the bubble title and
+    address as its subtitle, so an address with no name has nothing to hang
+    under and silently disappears. Rejecting it here is kinder than shipping a
+    message whose text the recipient can never see.
+
+    Numeric strings are accepted because Meta accepts them; they are range
+    checked all the same, since a swapped lat/long pair is the single most
+    common way a location send goes wrong and 181.0 is not a latitude.
+    """
+    if not isinstance(location, dict):
+        return 131008, "Parameter location is required."
+    for field, limit in (("latitude", 90), ("longitude", 180)):
+        if location.get(field) is None:
+            return 131008, f"Parameter location.{field} is required."
+        try:
+            value = float(location[field])
+        except (TypeError, ValueError):
+            return 131009, f"Parameter location.{field} must be a number."
+        if not -limit <= value <= limit:
+            return 131009, f"Parameter location.{field} must be between -{limit} and {limit}."
+    if location.get("address") and not location.get("name"):
+        return 131008, "Parameter location.name is required when location.address is given."
+    return None
+
+
 def normalize_phone(value: str) -> str:
     return "".join(character for character in value if character.isdigit())
 
@@ -145,6 +174,8 @@ class Engine:
                 stored_media = self.store.one("SELECT phone_number_id FROM media WHERE id=?", (media["id"],))
                 if not stored_media or stored_media["phone_number_id"] != phone_id:
                     return 131052, "The referenced media ID does not exist for this phone number."
+        if message_type == "location" and (failure := location_error(body.get("location"))):
+            return failure
         conversation = self.store.one("SELECT service_window_expires_at FROM conversations WHERE phone_number_id=? AND user_wa_id=?", (phone_id, to))
         window_open = bool(conversation and conversation["service_window_expires_at"] and self.store.now().isoformat() < conversation["service_window_expires_at"])
         if message_type != "template" and not window_open and self.settings.mode != "loose":
@@ -342,10 +373,16 @@ class Engine:
             if status == "delivered":
                 await self.confirm_inbound_delivery(delivery["message_id"])
         except Exception as exc:
-            self.store.execute("UPDATE webhook_deliveries SET status='failed',attempt_count=?,last_error=? WHERE id=?", (attempts, str(exc), delivery_id))
+            # Always name the exception class. httpx's timeout exceptions carry
+            # an empty message, so str(exc) alone stored "" and the transcript
+            # showed a failure it could not explain - which is exactly the case
+            # a reader is hovering the message to understand.
+            detail = str(exc).strip()
+            error = f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
+            self.store.execute("UPDATE webhook_deliveries SET status='failed',attempt_count=?,last_error=? WHERE id=?", (attempts, error, delivery_id))
             self.store.execute(
                 "UPDATE webhook_attempts SET completed_at=?,error=? WHERE id=?",
-                (self.store.now().isoformat(), str(exc), attempt_id),
+                (self.store.now().isoformat(), error, attempt_id),
             )
 
     async def confirm_inbound_delivery(self, message_id: str | None) -> None:

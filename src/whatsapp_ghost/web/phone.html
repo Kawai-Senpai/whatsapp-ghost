@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>WhatsApp</title>
-  <link rel="stylesheet" href="/static/phone.css?v=interactive-messages-v1">
+  <link rel="stylesheet" href="/static/phone.css?v=location-and-probe-v4">
 </head>
 <body>
   <!-- Icons: Lucide (ISC licensed), inlined so the sandbox keeps working offline.
@@ -16,6 +16,7 @@
     <symbol id="p-search" viewBox="0 0 24 24"><path d="m21 21-4.34-4.34" /> <circle cx="11" cy="11" r="8" /></symbol>
     <symbol id="p-back" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6" /></symbol>
     <symbol id="p-emoji" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" /> <path d="M8 14s1.5 2 4 2 4-2 4-2" /> <line x1="9" x2="9.01" y1="9" y2="9" /> <line x1="15" x2="15.01" y1="9" y2="9" /></symbol>
+    <symbol id="p-location" viewBox="0 0 24 24"><path d="M12 21s7-6.4 7-11a7 7 0 1 0-14 0c0 4.6 7 11 7 11z"/><circle cx="12" cy="10" r="2.6"/></symbol>
     <symbol id="p-attach" viewBox="0 0 24 24"><path d="m16 6-8.414 8.586a2 2 0 0 0 2.829 2.829l8.414-8.586a4 4 0 1 0-5.657-5.657l-8.379 8.551a6 6 0 1 0 8.485 8.485l8.379-8.551" /></symbol>
     <symbol id="p-send" viewBox="0 0 24 24"><path d="M3.714 3.048a.498.498 0 0 0-.683.627l2.843 7.627a2 2 0 0 1 0 1.396l-2.842 7.627a.498.498 0 0 0 .682.627l18-8.5a.5.5 0 0 0 0-.904z" /> <path d="M6 12h16" /></symbol>
     <symbol id="p-plus" viewBox="0 0 24 24"><path d="M5 12h14" /> <path d="M12 5v14" /></symbol>
@@ -155,11 +156,26 @@
         <button class="icon-btn" id="emoji-btn" title="Emoji"><svg><use href="#p-emoji"/></svg></button>
         <button class="icon-btn" title="Attach image" onclick="document.getElementById('file-input').click()"><svg><use href="#p-attach"/></svg></button>
         <input type="file" id="file-input" accept="image/*" hidden>
+        <button class="icon-btn" id="location-btn" title="Share location"><svg><use href="#p-location"/></svg></button>
         <form id="send-form">
           <input id="msg-input" autocomplete="off" placeholder="Type a message">
         </form>
         <button class="send-btn" id="send-btn" title="Send" onclick="document.getElementById('send-form').requestSubmit()"><svg><use href="#p-send"/></svg></button>
       </footer>
+      <form class="loc-sheet hidden" id="loc-sheet">
+        <div class="loc-sheet-head">Share location</div>
+        <div class="loc-sheet-row">
+          <label>Latitude<input id="loc-lat" inputmode="decimal" placeholder="19.0760" required></label>
+          <label>Longitude<input id="loc-lng" inputmode="decimal" placeholder="72.8777" required></label>
+        </div>
+        <label>Name <span>optional</span><input id="loc-name" placeholder="Gateway of India"></label>
+        <label>Address <span>needs a name</span><input id="loc-address" placeholder="Apollo Bandar, Colaba"></label>
+        <div class="loc-sheet-presets" id="loc-presets"></div>
+        <div class="loc-sheet-foot">
+          <button type="button" id="loc-cancel">Cancel</button>
+          <button type="submit" id="loc-send">Send location</button>
+        </div>
+      </form>
       <div class="emoji-picker hidden" id="emoji-picker"></div>
     </section>
 
@@ -171,6 +187,6 @@
       <div class="lock">Local sandbox · nothing leaves your device</div>
     </section>
   </div>
-  <script src="/static/phone.js?v=interactive-messages-v1"></script>
+  <script src="/static/phone.js?v=location-and-probe-v4"></script>
 </body>
 </html>

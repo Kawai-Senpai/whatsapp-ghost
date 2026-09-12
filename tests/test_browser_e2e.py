@@ -933,3 +933,128 @@ def test_console_lists_show_placeholders_before_their_data_arrives(
             [target, selector],
         )
         assert count > 0, f"{target} showed nothing while loading"
+
+
+def test_hover_diagnostics_refetch_without_a_page_reload(
+    page: Page, live_server: tuple[str, Path]
+) -> None:
+    """A webhook outcome lands with no status hop, so nothing invalidates the
+    cache. Hovering the same bubble twice must still show the current state."""
+    base_url, _ = live_server
+    sent = httpx.post(
+        base_url + "/_sandbox/phones/15550002001/messages",
+        json={
+            "phone_number_id": "PHONE_LOCAL",
+            "type": "button",
+            "button": {"payload": "ack", "text": "Acknowledge"},
+        },
+    )
+    assert sent.status_code == 201, sent.text
+    message_id = sent.json()["id"]
+
+    page.goto(base_url + "/phone?phone=15550002001&business=PHONE_LOCAL")
+    bubble = page.locator(f'.msg[data-message-id="{message_id}"]')
+    popover = page.locator("#msg-debug")
+
+    bubble.hover()
+    expect(popover).to_contain_text("No subscriber")
+
+    # The delivery log is dropped behind the page's back: no websocket event,
+    # no status change, nothing the client could react to.
+    assert httpx.delete(base_url + "/_sandbox/webhooks").status_code == 200
+
+    page.locator("#messages").hover(position={"x": 5, "y": 5})
+    bubble.hover()
+    expect(popover).to_contain_text("No webhook produced")
+
+
+def test_live_inbox_is_wider_than_the_chat_list_at_every_breakpoint(
+    page: Page, live_server: tuple[str, Path]
+) -> None:
+    """The inbox is the primary surface, so it outranks the chat list on width.
+
+    Both are sized by different mechanisms - the inbox by a clamp on the body
+    flex row, the chat list by a percentage inside .app's grid - so the ordering
+    only holds at the widths where those two curves are checked against each
+    other. Breakpoints are asserted rather than assumed.
+    """
+    base_url, _ = live_server
+    httpx.post(
+        base_url + "/_sandbox/phones/15550002001/messages",
+        json={"phone_number_id": "PHONE_LOCAL", "type": "text", "text": "hi"},
+    )
+    for width in (820, 1100, 1280, 1600, 1920):
+        page.set_viewport_size({"width": width, "height": 900})
+        page.goto(base_url + "/phone?phone=15550002001&business=PHONE_LOCAL")
+        page.wait_for_selector(".inbox")
+        inbox = page.locator(".inbox").bounding_box()["width"]
+        chat_list = page.locator(".pane").bounding_box()["width"]
+        assert inbox > chat_list, (
+            f"at {width}px the inbox is {inbox:.0f}px but the chat list is "
+            f"{chat_list:.0f}px; the inbox must be the wider of the two"
+        )
+
+
+def test_phone_shares_a_location_and_renders_it_as_a_map_bubble(
+    page: Page, live_server: tuple[str, Path]
+) -> None:
+    base_url, _ = live_server
+    opened = httpx.post(
+        base_url + "/_sandbox/phones/15550002001/messages",
+        json={"phone_number_id": "PHONE_LOCAL", "type": "text", "text": "on my way"},
+    )
+    assert opened.status_code == 201, opened.text
+
+    page.goto(base_url + "/phone?phone=15550002001&business=PHONE_LOCAL")
+    page.locator("#location-btn").click()
+    expect(page.locator("#loc-sheet")).to_be_visible()
+
+    page.get_by_role("button", name="Gateway of India").click()
+    expect(page.locator("#loc-lat")).to_have_value("18.922")
+    page.locator("#loc-send").click()
+
+    expect(page.locator("#loc-sheet")).to_be_hidden()
+    bubble = page.locator(".msg.out .loc-card").last
+    expect(bubble).to_be_visible()
+    expect(bubble).to_contain_text("Gateway of India")
+    expect(bubble).to_contain_text("Apollo Bandar, Colaba, Mumbai 400001")
+    expect(bubble).to_contain_text("18.92200, 72.83470")
+    assert "openstreetmap.org" in (bubble.get_attribute("href") or "")
+
+    stored = httpx.get(
+        base_url + "/_sandbox/messages",
+        params={"wa_id": "15550002001", "phone_number_id": "PHONE_LOCAL", "limit": 20},
+    ).json()["data"]
+    shared = next(item for item in stored if item["message_type"] == "location")
+    assert shared["direction"] == "inbound"
+    assert shared["payload"]["location"] == {
+        "latitude": 18.922, "longitude": 72.8347,
+        "name": "Gateway of India",
+        "address": "Apollo Bandar, Colaba, Mumbai 400001",
+    }
+
+
+def test_phone_renders_a_location_sent_by_the_business(
+    page: Page, live_server: tuple[str, Path]
+) -> None:
+    """The same bubble must render for an outbound location, with no name."""
+    base_url, _ = live_server
+    httpx.post(
+        base_url + "/_sandbox/phones/15550002001/messages",
+        json={"phone_number_id": "PHONE_LOCAL", "type": "text", "text": "where are you"},
+    )
+    sent = httpx.post(
+        base_url + "/v26.0/PHONE_LOCAL/messages",
+        headers={"Authorization": "Bearer browser-token"},
+        json={
+            "messaging_product": "whatsapp", "to": "15550002001", "type": "location",
+            "location": {"latitude": 28.6129, "longitude": 77.2295},
+        },
+    )
+    assert sent.status_code == 200, sent.text
+
+    page.goto(base_url + "/phone?phone=15550002001&business=PHONE_LOCAL")
+    bubble = page.locator(".msg.in .loc-card").last
+    expect(bubble).to_be_visible()
+    expect(bubble).to_contain_text("28.61290, 77.22950")
+    expect(bubble.locator(".loc-plate")).to_be_visible()

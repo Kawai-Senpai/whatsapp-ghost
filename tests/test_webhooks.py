@@ -266,3 +266,141 @@ def test_outbound_message_status_is_unaffected_by_webhook_routing(
     # No callback is subscribed anywhere in this test, yet the phone still got it.
     assert inbound_status(client, message_id) == "delivered"
     assert client.get("/_sandbox/webhooks").json()["data"][0]["status"] == "unrouted"
+
+
+def test_diagnostics_finds_the_delivery_for_an_inbound_message(
+    client: TestClient, settings,
+) -> None:
+    """An inbound message's webhook must be attributable to it.
+
+    In production this returned no deliveries at all, so a message whose webhook
+    had failed reported "no webhook produced for this message" and the sandbox
+    looked broken instead of the receiver being down.
+    """
+    client.post("/_sandbox/phones", json={"wa_id": "15550002001", "display_name": "T"})
+    message = client.post("/_sandbox/phones/15550002001/messages", json={
+        "phone_number_id": "PHONE_LOCAL", "type": "button",
+        "button": {"payload": "ack", "text": "Acknowledge"},
+    }).json()
+
+    diagnostics = client.get(f"/_sandbox/messages/{message['id']}/diagnostics").json()
+
+    assert diagnostics["verdict"] != "no_webhook"
+    assert len(diagnostics["deliveries"]) == 1
+
+
+def test_diagnostics_matches_on_the_message_id_column_not_only_the_body(
+    client: TestClient, settings,
+) -> None:
+    """The body scan alone is not enough to attribute a delivery.
+
+    request_body is a BLOB, and SQLite's LIKE returns false for a BLOB operand
+    on some builds (3.40 in python:3.12-slim does, 3.50 does not), which is what
+    silently broke this in production. An opaque body stands in for that here so
+    the regression is caught on any SQLite: only the message_id column can match.
+    """
+    from whatsapp_ghost.db import Store
+
+    client.post("/_sandbox/phones", json={"wa_id": "15550002001", "display_name": "T"})
+    message = client.post("/_sandbox/phones/15550002001/messages", json={
+        "phone_number_id": "PHONE_LOCAL", "type": "text", "text": "hi",
+    }).json()
+
+    store = Store(settings.database_path)
+    store.execute("DELETE FROM webhook_deliveries")
+    store.execute(
+        "INSERT INTO webhook_deliveries(id,event_type,destination_url,request_body,"
+        "signature,status,attempt_count,last_status_code,last_error,created_at,"
+        "delivered_at,message_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+        ("whd_opaque", "messages", "http://example.test/hook", b"\x00\x01opaque",
+         "sha256=x", "failed", 1, None, "", store.now().isoformat(), None, message["id"]),
+    )
+
+    diagnostics = client.get(f"/_sandbox/messages/{message['id']}/diagnostics").json()
+
+    assert [item["id"] for item in diagnostics["deliveries"]] == ["whd_opaque"]
+    assert diagnostics["verdict"] == "webhook_failed"
+
+
+def test_timeout_failure_is_reported_with_a_reason_not_an_empty_error(
+    client: TestClient, headers: dict[str, str], callback: CallbackRecorder,
+    monkeypatch,
+) -> None:
+    """A timed-out delivery must say why it failed.
+
+    httpx timeout exceptions carry an empty message, so recording str(exc) left
+    last_error as "" and the popover rendered a bare dash. That is what the
+    deployed sandbox did for 442 of its last 500 deliveries: they were plainly
+    failures, and the UI could not name a single one of them.
+    """
+    import httpx as httpx_module
+    from whatsapp_ghost import engine as engine_module
+
+    assert str(httpx_module.ReadTimeout("")) == "", "premise: timeouts carry no message"
+
+    client.post("/v25.0/WABA_LOCAL/subscribed_apps", headers=headers, json={
+        "callback_url": callback.url, "verify_token": "receiver-token",
+    })
+
+    class TimingOutClient:
+        def __init__(self, *args, **kwargs) -> None: ...
+        async def __aenter__(self): return self
+        async def __aexit__(self, *exc): return False
+        async def post(self, *args, **kwargs):
+            raise httpx_module.ReadTimeout("")
+
+    monkeypatch.setattr(engine_module.httpx, "AsyncClient", TimingOutClient)
+
+    client.post("/_sandbox/phones", json={"wa_id": "15550002001", "display_name": "T"})
+    message = client.post("/_sandbox/phones/15550002001/messages", json={
+        "phone_number_id": "PHONE_LOCAL", "type": "button",
+        "button": {"payload": "ack", "text": "Acknowledge"},
+    }).json()
+
+    queued = next(
+        item for item in client.get("/_sandbox/webhooks").json()["data"]
+        if item["message_id"] == message["id"]
+    )
+    delivery = wait_for_delivery(client, queued["id"], "failed")
+    assert delivery["last_status_code"] is None
+    assert delivery["last_error"], "a timeout must record a reason, not an empty string"
+    assert "ReadTimeout" in delivery["last_error"]
+
+    diagnostics = client.get(f"/_sandbox/messages/{message['id']}/diagnostics").json()
+    assert diagnostics["verdict"] == "webhook_failed"
+    assert diagnostics["deliveries"][0]["last_error"]
+
+
+def test_rate_limited_delivery_reports_the_code_and_the_receivers_message(
+    client: TestClient, headers: dict[str, str], callback: CallbackRecorder,
+) -> None:
+    """A 429 must be attributable to the message that provoked it.
+
+    The deployed receiver rejects with 'Rate limit exceeded: 200 per 1 minute'.
+    That reason was always recorded; it was unreachable because diagnostics
+    could not match the delivery to its message.
+    """
+    client.post("/v25.0/WABA_LOCAL/subscribed_apps", headers=headers, json={
+        "callback_url": callback.url, "verify_token": "receiver-token",
+    })
+    callback.response_status = 429
+    callback.response_body = b'{"error":"Rate limit exceeded: 200 per 1 minute"}'
+
+    client.post("/_sandbox/phones", json={"wa_id": "15550002001", "display_name": "T"})
+    message = client.post("/_sandbox/phones/15550002001/messages", json={
+        "phone_number_id": "PHONE_LOCAL", "type": "button",
+        "button": {"payload": "ack", "text": "Acknowledge"},
+    }).json()
+
+    queued = next(
+        item for item in client.get("/_sandbox/webhooks").json()["data"]
+        if item["message_id"] == message["id"]
+    )
+    wait_for_delivery(client, queued["id"], "failed")
+
+    diagnostics = client.get(f"/_sandbox/messages/{message['id']}/diagnostics").json()
+
+    assert diagnostics["verdict"] == "webhook_failed"
+    delivery = next(d for d in diagnostics["deliveries"] if d["id"] == queued["id"])
+    assert delivery["last_status_code"] == 429
+    assert "Rate limit exceeded" in delivery["last_error"]

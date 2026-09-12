@@ -20,7 +20,7 @@ button{cursor:pointer;font:inherit;color:inherit;border:0;background:none}
    a centered card, which wasted a band of green above and below. */
 .app{
   width:auto;height:100%;margin:0;min-width:0;flex:1;
-  display:grid;grid-template-columns:minmax(300px,30%) 1fr;min-height:0;overflow:hidden;
+  display:grid;grid-template-columns:minmax(260px,26%) 1fr;min-height:0;overflow:hidden;
   background:var(--panel);
 }
 
@@ -84,6 +84,41 @@ button{cursor:pointer;font:inherit;color:inherit;border:0;background:none}
 .msg.out .interactive-option{background:var(--bubble-out)}
 .interactive-option strong{color:#027eb5;font-weight:600}.interactive-option span{font-size:12px;color:var(--muted)}
 .interactive-option:hover{filter:brightness(.97)}.interactive-option:disabled{color:var(--muted);cursor:wait}
+/* ===== location bubble =====
+   Plate then name over address, the stack WhatsApp uses. The negative margins
+   match .tpl-buttons so the plate bleeds to the bubble edge instead of sitting
+   inside the padding with a stripe of bubble colour around it. */
+.loc-card{display:block;margin:-3px -5px 4px;border-radius:6px;overflow:hidden;
+  text-decoration:none;color:inherit;background:rgba(11,20,26,.04);max-width:280px}
+.loc-card:hover{text-decoration:none;filter:brightness(.98)}
+.loc-plate{display:block;width:100%;height:auto;background:#e8ece9}
+.loc-meta{display:flex;flex-direction:column;gap:1px;padding:7px 9px 8px}
+.loc-meta strong{font-size:13.5px;font-weight:600;color:var(--ink);line-height:18px}
+.loc-address{font-size:12.5px;color:#667781;line-height:17px}
+.loc-coords{font-size:11px;color:#8696a0;font-variant-numeric:tabular-nums;margin-top:2px}
+
+/* ===== location composer sheet ===== */
+.loc-sheet{position:absolute;left:14px;right:14px;bottom:64px;z-index:9;max-width:360px;
+  display:flex;flex-direction:column;gap:9px;padding:14px;background:#fff;border-radius:10px;
+  box-shadow:0 4px 18px rgba(11,20,26,.25)}
+.loc-sheet-head{font-size:12px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;color:#667781}
+.loc-sheet-row{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+.loc-sheet label{display:flex;flex-direction:column;gap:3px;font-size:11px;color:#667781}
+.loc-sheet label span{color:#8696a0;font-style:italic}
+.loc-sheet input{font:inherit;font-size:13px;color:var(--ink);padding:7px 9px;
+  border:1px solid var(--line);border-radius:6px;background:#fff;min-width:0}
+.loc-sheet input:focus{outline:2px solid rgba(0,168,132,.35);outline-offset:-1px}
+.loc-sheet-presets{display:flex;flex-wrap:wrap;gap:6px}
+.loc-sheet-presets button{font-size:11.5px;padding:5px 9px;border-radius:999px;
+  background:#f0f2f5;color:#3b4a54}
+.loc-sheet-presets button:hover{background:#e4e7ea}
+.loc-sheet-foot{display:flex;justify-content:flex-end;gap:8px;margin-top:2px}
+.loc-sheet-foot button{font-size:13px;padding:7px 14px;border-radius:6px}
+#loc-cancel{color:#667781}#loc-cancel:hover{background:#f0f2f5}
+#loc-send{background:var(--accent,#00a884);color:#fff;font-weight:600}
+#loc-send:hover{filter:brightness(1.06)}
+#loc-send:disabled{opacity:.6;cursor:wait}
+
 .msg .media-thumb{display:block;max-width:280px;width:100%;border-radius:6px;margin-bottom:4px}
 .msg .raw{display:none;margin-top:8px;padding:8px;background:rgba(0,0,0,.04);border-radius:6px;font:11px ui-monospace,monospace;color:#3b4a54;white-space:pre-wrap}
 .msg.show-raw .raw{display:block}
@@ -124,9 +159,16 @@ button{cursor:pointer;font:inherit;color:inherit;border:0;background:none}
 
 /* ===== cross-mobile live inbox =====
    A sibling of .app in the body flex row, so the WhatsApp frame keeps its own
-   centered layout and simply gets narrower rather than being nested inside it. */
+   centered layout and simply gets narrower rather than being nested inside it.
+
+   Sized wider than the chat list on purpose. The inbox carries every event
+   across every simulated mobile, which is what a reader is actually watching;
+   the chat list only indexes one mobile's conversations and its rows are just a
+   name and a number. Feed bodies are single-line and were losing their message
+   to an ellipsis at 330px, so the width buys legibility, not whitespace. */
 .inbox{
-  width:330px;flex:0 0 330px;align-self:stretch;display:flex;flex-direction:column;
+  width:clamp(360px,32vw,560px);flex:0 0 clamp(360px,32vw,560px);
+  align-self:stretch;display:flex;flex-direction:column;
   min-height:0;background:#0b141a;color:#e9edef;font-size:13px;
   border-right:1px solid #2a3942;
 }
@@ -192,7 +234,7 @@ button{cursor:pointer;font:inherit;color:inherit;border:0;background:none}
 .feed-empty{color:#6e8290;text-align:center;padding:26px 18px;line-height:1.7;font-size:12px}
 @media(max-width:1100px){.inbox{width:44px;flex-basis:44px}
   .inbox .mobiles,.inbox .feed,.inbox-head b,.inbox-clear,.inbox-dot{display:none}
-  .inbox:not(.collapsed){width:330px;flex-basis:330px}
+  .inbox:not(.collapsed){width:clamp(330px,36vw,420px);flex-basis:clamp(330px,36vw,420px)}
   .inbox:not(.collapsed) .mobiles,.inbox:not(.collapsed) .feed,
   .inbox:not(.collapsed) .inbox-head b,.inbox:not(.collapsed) .inbox-clear,
   .inbox:not(.collapsed) .inbox-dot{display:revert}}
@@ -497,6 +539,8 @@ button{cursor:pointer;font:inherit;color:inherit;border:0;background:none}
 .dbg-hook-url{margin-top:3px;color:#5d707c;font:11px ui-monospace,monospace;
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .dbg-error{margin-top:5px;background:rgba(229,72,77,.12);color:#ff9a9e;border-radius:5px;
+.dbg-response{margin-top:6px;padding:6px 8px;border-radius:5px;background:rgba(37,211,102,.10);
+  color:#9fd9b4;font:11px ui-monospace,monospace;white-space:pre-wrap;word-break:break-all}
   padding:5px 7px;font:11px ui-monospace,monospace;word-break:break-word}
 .dbg-foot{margin-top:11px;padding-top:8px;border-top:1px solid #1e2c35;color:#4d606b;
   font:10.5px ui-monospace,monospace;word-break:break-all}

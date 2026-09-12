@@ -150,6 +150,40 @@ function linkify(value){
   return html + esc(text.slice(cursor));
 }
 
+/* A location bubble: map plate, then name over address, exactly the stack
+   WhatsApp uses. The plate is drawn inline rather than fetched: map tiles are a
+   network dependency, and a sandbox whose whole point is running offline must
+   not render a broken image when there is no route to a tile server. The pin
+   sits at the real fractional position of the coordinate within its degree
+   square, so two nearby places do not draw an identical picture.
+   Tapping opens OpenStreetMap, which needs no key and no account. */
+function locationPlate(lat, lng){
+  const x = 8 + ((lng + 180) % 1) * 84, y = 8 + ((lat + 90) % 1) * 60;
+  return `<svg class="loc-plate" viewBox="0 0 100 76" aria-hidden="true">`
+    + `<rect width="100" height="76" fill="#e8ece9"/>`
+    + `<path d="M-10 58 L40 26 L72 42 L110 18" fill="none" stroke="#cfd8d3" stroke-width="9"/>`
+    + `<path d="M-10 20 L28 34 L52 22 L110 52" fill="none" stroke="#dde4e0" stroke-width="6"/>`
+    + `<rect x="-10" y="60" width="120" height="26" fill="#cfe3f0"/>`
+    + `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="13" fill="#25d366" opacity=".22"/>`
+    + `<path d="M${x.toFixed(1)} ${(y+7).toFixed(1)}c0 0-5-5.2-5-8a5 5 0 0 1 10 0c0 2.8-5 8-5 8z" fill="#d3312a"/>`
+    + `</svg>`;
+}
+
+function locationHtml(val){
+  const href = `https://www.openstreetmap.org/?mlat=${val.lat}&mlon=${val.lng}#map=17/${val.lat}/${val.lng}`;
+  const coords = `${val.lat.toFixed(5)}, ${val.lng.toFixed(5)}`;
+  // stopPropagation: the bubble toggles the raw payload on click, so without it
+  // opening the map also flips the JSON view open underneath.
+  return `<a class="loc-card" href="${esc(href)}" target="_blank" rel="noopener noreferrer"`
+    + ` onclick="event.stopPropagation()" title="Open in OpenStreetMap">`
+    + locationPlate(val.lat, val.lng)
+    + `<span class="loc-meta">`
+    + (val.name ? `<strong>${esc(val.name)}</strong>` : '')
+    + (val.address ? `<span class="loc-address">${esc(val.address)}</span>` : '')
+    + `<span class="loc-coords">${esc(coords)}</span>`
+    + `</span></a>`;
+}
+
 /* Interactive list / reply-button messages. An inbound *_reply is the
    customer's answer and renders as plain text; an outbound one carries the
    choices, which render as tappable rows that post the reply back. */
@@ -198,6 +232,16 @@ function messageText(m){
     // A real client shows the rendered body, not the template name, so the
     // positional {{n}} values are substituted from the sent parameters.
     return {kind:'template', name, text: renderTemplateBody(name, tpl), buttons:renderTemplateButtons(name,tpl), headerMedia:renderTemplateHeaderMedia(tpl)};
+  }
+  if(t === 'location'){
+    const loc = p.location || {};
+    const lat = Number(loc.latitude), lng = Number(loc.longitude);
+    if(!Number.isFinite(lat) || !Number.isFinite(lng)) return {kind:'text', text:'[location]'};
+    // The searchable/preview text is the place name when there is one, because
+    // that is what WhatsApp shows in the chat list - a raw coordinate pair is
+    // unrecognisable at a glance and unsearchable by the name you know it by.
+    const label = loc.name || `${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+    return {kind:'location', lat, lng, name:loc.name||'', address:loc.address||'', text:label};
   }
   if(t === 'interactive') return interactiveMessage(p);
   if(t === 'button') return {kind:'text', text:p.button?.text || p.button?.payload || 'Button reply'};
@@ -575,6 +619,8 @@ function renderMessages(options){
         ? `<img class="media-thumb tpl-header-media" src="${esc(val.headerMedia.src)}" alt="Approved arrival selfie">`
         : val.headerMedia ? `<span class="tpl-tag">${esc(val.headerMedia.label).toUpperCase()}</span>` : '';
       bodyHtml = `${header}<span class="tpl-tag">TEMPLATE</span><span class="body">${linkify(val.text || val.name)}</span>${buttons}`;
+    } else if(val.kind==='location'){
+      bodyHtml += locationHtml(val);
     } else if(val.kind==='interactive'){
       const options=(val.options||[]).map(option=>
         `<button type="button" class="interactive-option" data-interactive-reply="${esc(option.id)}" data-interactive-title="${esc(option.title)}" data-interactive-description="${esc(option.description)}" data-interactive-type="${esc(option.type)}"><strong>${esc(option.title)}</strong>${option.description?`<span>${esc(option.description)}</span>`:''}</button>`
@@ -931,7 +977,19 @@ $('#stats-close').addEventListener('click', closeStats);
    it in place: the status hops with their delays, and every webhook the message
    produced with its HTTP result. */
 const diagnosticsCache = new Map();
+const diagnosticsInflight = new Map();
 let diagnosticsTimer = null, diagnosticsFor = null;
+
+/* One request per message in flight at a time. Without this a hover that lands
+   while an earlier fetch is still running stacks a second identical request. */
+function fetchDiagnostics(id){
+  if(diagnosticsInflight.has(id)) return diagnosticsInflight.get(id);
+  const pending = req('/_sandbox/messages/'+encodeURIComponent(id)+'/diagnostics')
+    .catch(error=>({error:error.message||'Could not load diagnostics'}))
+    .then(data=>{ diagnosticsCache.set(id, data); diagnosticsInflight.delete(id); return data; });
+  diagnosticsInflight.set(id, pending);
+  return pending;
+}
 
 /* Drop a cached diagnostic and repaint if the popover is currently showing it. */
 function invalidateDiagnostics(messageId){
@@ -977,7 +1035,13 @@ function diagnosticsHtml(data){
     : '<div class="dbg-none">No status transitions recorded.</div>';
   const hooks = data.deliveries.length
     ? data.deliveries.map(hook=>{
-        const code = hook.last_status_code ? 'HTTP '+hook.last_status_code : (hook.status==='unrouted' ? 'not sent' : '—');
+        // A failure with no status code never reached the server at all - a
+        // timeout or a refused connection - which reads very differently from a
+        // server that answered and rejected the event. Saying "—" hid that.
+        const code = hook.last_status_code ? 'HTTP '+hook.last_status_code
+          : hook.status==='unrouted' ? 'not sent'
+          : hook.status==='failed' ? 'no response'
+          : hook.status==='pending' ? 'in flight' : '—';
         return `<div class="dbg-hook">
           <div class="dbg-hook-top">
             <span class="dbg-pill ${esc(hook.status)}">${esc(hook.status)}</span>
@@ -991,6 +1055,7 @@ function diagnosticsHtml(data){
           </div>
           ${hook.destination_url ? `<div class="dbg-hook-url">${esc(hook.destination_url)}</div>` : ''}
           ${hook.last_error ? `<div class="dbg-error">${esc(hook.last_error)}</div>` : ''}
+          ${hook.last_response_body && !hook.last_error ? `<div class="dbg-response">${esc(String(hook.last_response_body).slice(0,300))}</div>` : ''}
         </div>`;
       }).join('')
     : '<div class="dbg-none">Nothing was queued for delivery.</div>';
@@ -1045,24 +1110,27 @@ async function showDiagnostics(bubble){
   diagnosticsFor = id;
   const box = diagnosticsBox();
   clearTimeout(box._hide);
-  if(!diagnosticsCache.has(id)){
+  const paint = data => {
+    if(diagnosticsFor !== id) return;   // pointer moved on while we fetched
+    box.innerHTML = data.error
+      ? `<div class="dbg-loading">${esc(data.error)}</div>`
+      : diagnosticsHtml(data);
+    box.classList.add('show');
+    placeDiagnostics(box, bubble);
+  };
+  // A webhook outcome lands long after the message itself stops changing: a
+  // retry, a timeout or a late 2xx produces no status hop, so nothing marks the
+  // cache stale and a cached copy keeps describing a delivery that has since
+  // failed or succeeded. Every hover therefore refetches. The cached copy is
+  // painted first so the popover still opens instantly instead of flashing a
+  // spinner over information we already have.
+  if(diagnosticsCache.has(id)) paint(diagnosticsCache.get(id));
+  else{
     box.innerHTML = '<div class="dbg-loading"><span class="spinner"></span> Loading diagnostics…</div>';
     box.classList.add('show');
     placeDiagnostics(box, bubble);
-    try{
-      diagnosticsCache.set(id, await req('/_sandbox/messages/'+encodeURIComponent(id)+'/diagnostics'));
-    }catch(e){
-      // Cached as an error so a flapping hover does not re-request forever.
-      diagnosticsCache.set(id, {error:e.message||'Could not load diagnostics'});
-    }
   }
-  if(diagnosticsFor !== id) return;   // pointer moved on while we fetched
-  const data = diagnosticsCache.get(id);
-  box.innerHTML = data.error
-    ? `<div class="dbg-loading">${esc(data.error)}</div>`
-    : diagnosticsHtml(data);
-  box.classList.add('show');
-  placeDiagnostics(box, bubble);
+  paint(await fetchDiagnostics(id));
 }
 
 function hideDiagnostics(){
@@ -1092,6 +1160,70 @@ $('#messages').addEventListener('mouseout', event=>{
 $('#messages').addEventListener('scroll', ()=>{ clearTimeout(diagnosticsTimer); hideDiagnostics(); });
 document.addEventListener('click',event=>{if(!event.target.closest('#convo-menu')&&!event.target.closest('#convo-menu-btn'))$('#convo-menu').classList.add('hidden');});
 document.addEventListener('click',event=>{if(!event.target.closest('.msg-action-menu')&&!event.target.closest('.msg-action-toggle'))document.querySelectorAll('.msg.actions-open').forEach(item=>item.classList.remove('actions-open'));});
+
+/* ---- share a location, as the customer ---- */
+// Real coordinates for the presets: a sandbox that ships 0,0 teaches nobody
+// what a plausible payload looks like, and Null Island renders identically for
+// every one of them.
+const LOCATION_PRESETS = [
+  {label:'Gateway of India', latitude:18.9220, longitude:72.8347, name:'Gateway of India', address:'Apollo Bandar, Colaba, Mumbai 400001'},
+  {label:'Bengaluru airport', latitude:13.1986, longitude:77.7066, name:'Kempegowda International Airport', address:'KIAL Rd, Devanahalli, Bengaluru 560300'},
+  {label:'Coordinates only', latitude:28.6129, longitude:77.2295, name:'', address:''},
+];
+
+const locSheet = $('#loc-sheet');
+
+function closeLocationSheet(){ locSheet.classList.add('hidden'); }
+
+function openLocationSheet(){
+  $('#emoji-picker').classList.add('hidden');
+  locSheet.classList.remove('hidden');
+  $('#loc-lat').focus();
+}
+
+$('#loc-presets').innerHTML = LOCATION_PRESETS.map((preset, index)=>
+  `<button type="button" data-loc-preset="${index}">${esc(preset.label)}</button>`).join('');
+
+$('#loc-presets').addEventListener('click', event=>{
+  const button = event.target.closest('[data-loc-preset]');
+  if(!button) return;
+  const preset = LOCATION_PRESETS[Number(button.dataset.locPreset)];
+  $('#loc-lat').value = preset.latitude;
+  $('#loc-lng').value = preset.longitude;
+  $('#loc-name').value = preset.name;
+  $('#loc-address').value = preset.address;
+});
+
+$('#location-btn').addEventListener('click', ()=>{
+  if(locSheet.classList.contains('hidden')) openLocationSheet(); else closeLocationSheet();
+});
+$('#loc-cancel').addEventListener('click', closeLocationSheet);
+
+locSheet.addEventListener('submit', async event=>{
+  event.preventDefault();
+  const latitude = Number($('#loc-lat').value), longitude = Number($('#loc-lng').value);
+  if(!Number.isFinite(latitude) || !Number.isFinite(longitude)){
+    alert('Latitude and longitude must both be numbers.');
+    return;
+  }
+  // Meta omits name and address rather than sending empty strings, and the
+  // sandbox's whole contract is that its payloads match the wire exactly.
+  const location = {latitude, longitude};
+  const name = $('#loc-name').value.trim(), address = $('#loc-address').value.trim();
+  if(name) location.name = name;
+  if(address) location.address = address;
+  const button = $('#loc-send');
+  button.disabled = true;
+  try{
+    await sendInbound({type:'location', location});
+    closeLocationSheet();
+    locSheet.reset();
+  }catch(error){
+    alert(error.message);
+  }finally{
+    button.disabled = false;
+  }
+});
 
 /* ---- attach an image through the same media-ID flow as Cloud API ---- */
 $('#file-input').addEventListener('change', async e=>{
