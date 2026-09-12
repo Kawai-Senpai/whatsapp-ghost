@@ -221,6 +221,71 @@ def test_phone_renders_and_activates_template_buttons(page: Page, live_server: t
     expect(page.locator(".msg.out .body").last).to_have_text("Acknowledge")
 
 
+def test_phone_renders_and_submits_interactive_list_rows(
+    page: Page, live_server: tuple[str, Path]
+) -> None:
+    base_url, _ = live_server
+    headers = {"Authorization": "Bearer browser-token"}
+    opened = httpx.post(
+        base_url + "/_sandbox/phones/15550002001/messages",
+        json={
+            "phone_number_id": "PHONE_LOCAL",
+            "type": "text",
+            "text": "Open the support feedback window",
+        },
+    )
+    assert opened.status_code == 201, opened.text
+    sent = httpx.post(
+        base_url + "/v26.0/PHONE_LOCAL/messages",
+        headers=headers,
+        json={
+            "messaging_product": "whatsapp",
+            "to": "15550002001",
+            "type": "interactive",
+            "interactive": {
+                "type": "list",
+                "body": {"text": "How was your support experience?"},
+                "action": {
+                    "button": "Rate support",
+                    "sections": [
+                        {
+                            "title": "Choose a rating",
+                            "rows": [
+                                {
+                                    "id": "support_feedback:resolution-id:5",
+                                    "title": "5 stars",
+                                    "description": "Excellent",
+                                }
+                            ],
+                        }
+                    ],
+                },
+            },
+        },
+    )
+    assert sent.status_code == 200, sent.text
+
+    page.goto(base_url + "/phone?phone=15550002001&business=PHONE_LOCAL")
+    message = page.locator(".msg.in", has_text="How was your support experience?").last
+    rating = message.get_by_role("button", name="5 stars Excellent")
+    expect(rating).to_be_visible()
+    rating.click()
+    expect(page.locator(".msg.out .body").last).to_have_text("5 stars")
+
+    stored = httpx.get(
+        base_url + "/_sandbox/messages",
+        params={"wa_id": "15550002001", "phone_number_id": "PHONE_LOCAL", "limit": 20},
+    ).json()["data"]
+    reply = next(
+        item
+        for item in stored
+        if item["direction"] == "inbound" and item["message_type"] == "interactive"
+    )
+    assert reply["payload"]["interactive"]["list_reply"]["id"] == (
+        "support_feedback:resolution-id:5"
+    )
+
+
 def test_phone_pin_search_emoji_reply_reaction_and_normal_messages(
     page: Page, live_server: tuple[str, Path]
 ) -> None:

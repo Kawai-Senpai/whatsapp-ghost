@@ -150,6 +150,36 @@ function linkify(value){
   return html + esc(text.slice(cursor));
 }
 
+/* Interactive list / reply-button messages. An inbound *_reply is the
+   customer's answer and renders as plain text; an outbound one carries the
+   choices, which render as tappable rows that post the reply back. */
+function interactiveMessage(payload){
+  const interactive = payload.interactive || {};
+  const reply = interactive.list_reply || interactive.button_reply;
+  if(reply){
+    return {kind:'text', text:reply.title || reply.id || 'Interactive reply'};
+  }
+  const action = interactive.action || {};
+  const options = [];
+  for(const section of (action.sections || [])){
+    for(const row of (section.rows || [])){
+      if(row.id && row.title){
+        options.push({type:'list_reply', id:String(row.id), title:String(row.title), description:String(row.description || '')});
+      }
+    }
+  }
+  for(const button of (action.buttons || [])){
+    const value = button.reply || {};
+    if(value.id && value.title){
+      options.push({type:'button_reply', id:String(value.id), title:String(value.title), description:''});
+    }
+  }
+  const header = interactive.header?.text || '';
+  const body = interactive.body?.text || '';
+  const footer = interactive.footer?.text || '';
+  return {kind:'interactive', text:[header,body,footer].filter(Boolean).join('\n'), options};
+}
+
 /* Robustly extract a human-readable body from any stored payload shape. */
 function messageText(m){
   const p = m.payload || {};
@@ -169,6 +199,7 @@ function messageText(m){
     // positional {{n}} values are substituted from the sent parameters.
     return {kind:'template', name, text: renderTemplateBody(name, tpl), buttons:renderTemplateButtons(name,tpl), headerMedia:renderTemplateHeaderMedia(tpl)};
   }
+  if(t === 'interactive') return interactiveMessage(p);
   if(t === 'button') return {kind:'text', text:p.button?.text || p.button?.payload || 'Button reply'};
   if(['image','video','audio','document','sticker'].includes(t)){
     const media = p[t] || {};
@@ -544,6 +575,11 @@ function renderMessages(options){
         ? `<img class="media-thumb tpl-header-media" src="${esc(val.headerMedia.src)}" alt="Approved arrival selfie">`
         : val.headerMedia ? `<span class="tpl-tag">${esc(val.headerMedia.label).toUpperCase()}</span>` : '';
       bodyHtml = `${header}<span class="tpl-tag">TEMPLATE</span><span class="body">${linkify(val.text || val.name)}</span>${buttons}`;
+    } else if(val.kind==='interactive'){
+      const options=(val.options||[]).map(option=>
+        `<button type="button" class="interactive-option" data-interactive-reply="${esc(option.id)}" data-interactive-title="${esc(option.title)}" data-interactive-description="${esc(option.description)}" data-interactive-type="${esc(option.type)}"><strong>${esc(option.title)}</strong>${option.description?`<span>${esc(option.description)}</span>`:''}</button>`
+      ).join('');
+      bodyHtml += `<span class="body">${linkify(val.text || 'Choose an option')}</span>${options?`<div class="interactive-options">${options}</div>`:''}`;
     } else if(val.kind==='media'){
       if(val.mtype==='image' && val.src) bodyHtml += `<img class="media-thumb" src="${esc(val.src)}" alt="">`;
       else bodyHtml += `<span class="tpl-tag">${esc(val.label).toUpperCase()}</span>`;
@@ -583,6 +619,21 @@ $('#messages').addEventListener('click', async event=>{
   }catch(error){
     alert(error.message);
     button.disabled=false;
+  }
+});
+$('#messages').addEventListener('click', async event=>{
+  const option=event.target.closest('[data-interactive-reply]');
+  if(!option) return;
+  event.stopPropagation();
+  option.disabled=true;
+  const reply={id:option.dataset.interactiveReply,title:option.dataset.interactiveTitle};
+  if(option.dataset.interactiveDescription) reply.description=option.dataset.interactiveDescription;
+  const replyType=option.dataset.interactiveType==='button_reply'?'button_reply':'list_reply';
+  try{
+    await sendInbound({type:'interactive',interactive:{type:replyType,[replyType]:reply}});
+  }catch(error){
+    alert(error.message);
+    option.disabled=false;
   }
 });
 $('#messages').addEventListener('click', async event=>{

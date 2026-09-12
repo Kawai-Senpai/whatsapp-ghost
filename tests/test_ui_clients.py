@@ -89,6 +89,14 @@ def test_phone_client_renders_template_bodies_with_variables(client: TestClient)
     assert "data-template-reply" in phone_js
 
 
+def test_phone_client_renders_interactive_lists_as_customer_choices(client: TestClient) -> None:
+    phone_js = client.get("/static/phone.js").text
+    assert "function interactiveMessage" in phone_js
+    assert "data-interactive-reply" in phone_js
+    assert "list_reply" in phone_js
+    assert "'['+t+']'" in phone_js
+
+
 def test_console_exposes_a_credentials_page(client: TestClient) -> None:
     """Every ID, token and secret should be reachable from one page, with
     ready-to-paste config for the common integrations."""
