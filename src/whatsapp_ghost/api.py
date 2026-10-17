@@ -635,45 +635,54 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             values.append(phone_number_id)
         join = (" FROM messages m JOIN conversations c ON c.id=m.conversation_id WHERE " + where)
 
-        totals = store.one(
-            "SELECT COUNT(*) AS total,"
-            " SUM(CASE WHEN m.direction='inbound' THEN 1 ELSE 0 END) AS inbound,"
-            " SUM(CASE WHEN m.direction='outbound' THEN 1 ELSE 0 END) AS outbound,"
-            " MIN(m.created_at) AS first_at, MAX(m.created_at) AS last_at" + join,
-            tuple(values),
+        # One pass over the chat's messages, grouped by every dimension at once.
+        # The groups are few (hours x days x types x statuses), so the five
+        # breakdowns are folded in Python instead of scanning the chat five times.
+        groups = store.all(
+            "SELECT CAST(strftime('%H', m.created_at, ?) AS INTEGER) AS hour,"
+            " date(m.created_at, ?) AS day, m.direction AS direction,"
+            " m.message_type AS message_type, m.status AS status, COUNT(*) AS total,"
+            " MIN(m.created_at) AS first_at, MAX(m.created_at) AS last_at"
+            + join + " GROUP BY hour, day, direction, message_type, status",
+            (shift, shift, *values),
         )
-        by_hour = {int(row["hour"]): row["total"] for row in store.all(
-            "SELECT CAST(strftime('%H', m.created_at, ?) AS INTEGER) AS hour, COUNT(*) AS total"
-            + join + " GROUP BY hour", (shift, *values),
-        )}
-        by_day = rows(store.all(
-            "SELECT date(m.created_at, ?) AS day, COUNT(*) AS total,"
-            " SUM(CASE WHEN m.direction='inbound' THEN 1 ELSE 0 END) AS inbound,"
-            " SUM(CASE WHEN m.direction='outbound' THEN 1 ELSE 0 END) AS outbound"
-            + join + " GROUP BY day ORDER BY day", (shift, *values),
-        ))
-        by_type = {row["message_type"]: row["total"] for row in store.all(
-            "SELECT m.message_type AS message_type, COUNT(*) AS total" + join
-            + " GROUP BY m.message_type ORDER BY total DESC", tuple(values),
-        )}
-        by_status = {row["status"]: row["total"] for row in store.all(
-            "SELECT m.status AS status, COUNT(*) AS total" + join
-            + " AND m.direction='outbound' GROUP BY m.status", tuple(values),
-        )}
+        total = inbound = outbound = 0
+        first_at = last_at = None
+        by_hour = [0] * 24
+        days: dict[str, dict[str, Any]] = {}
+        by_type: dict[str, int] = {}
+        by_status: dict[str, int] = {}
+        for row in groups:
+            count = row["total"]
+            total += count
+            is_inbound = row["direction"] == "inbound"
+            is_outbound = row["direction"] == "outbound"
+            inbound += count if is_inbound else 0
+            outbound += count if is_outbound else 0
+            first_at = row["first_at"] if first_at is None else min(first_at, row["first_at"])
+            last_at = row["last_at"] if last_at is None else max(last_at, row["last_at"])
+            by_hour[row["hour"]] += count
+            day = days.setdefault(row["day"], {"day": row["day"], "total": 0, "inbound": 0, "outbound": 0})
+            day["total"] += count
+            day["inbound"] += count if is_inbound else 0
+            day["outbound"] += count if is_outbound else 0
+            by_type[row["message_type"]] = by_type.get(row["message_type"], 0) + count
+            if is_outbound:
+                by_status[row["status"]] = by_status.get(row["status"], 0) + count
         return {
             "wa_id": normalized,
             "phone_number_id": phone_number_id,
             "tz_offset": tz_offset,
-            "total": (totals["total"] if totals else 0) or 0,
-            "inbound": (totals["inbound"] if totals else 0) or 0,
-            "outbound": (totals["outbound"] if totals else 0) or 0,
-            "first_at": totals["first_at"] if totals else None,
-            "last_at": totals["last_at"] if totals else None,
+            "total": total,
+            "inbound": inbound,
+            "outbound": outbound,
+            "first_at": first_at,
+            "last_at": last_at,
             # Always 24 slots, so the histogram has a stable x axis even when a
             # chat only ever saw traffic in one hour of the day.
-            "by_hour": [by_hour.get(hour, 0) for hour in range(24)],
-            "by_day": by_day,
-            "by_type": by_type,
+            "by_hour": by_hour,
+            "by_day": [days[key] for key in sorted(days)],
+            "by_type": dict(sorted(by_type.items(), key=lambda item: -item[1])),
             "by_status": by_status,
         }
 

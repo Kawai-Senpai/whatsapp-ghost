@@ -191,7 +191,11 @@ class Store:
             "PRAGMA foreign_keys=ON",
             "PRAGMA synchronous=NORMAL",   # safe under WAL; one fsync per checkpoint
             "PRAGMA temp_store=MEMORY",
-            "PRAGMA cache_size=-65536",    # 64 MB page cache per connection
+            # Private heap per connection, and there is one connection per
+            # worker thread (up to 40), so this multiplies: at 64 MB a busy
+            # server held 4 GB. Reads are served by mmap below, which is the
+            # shared OS page cache, so a small private cache costs nothing.
+            "PRAGMA cache_size=-8192",     # 8 MB page cache per connection
             "PRAGMA mmap_size=268435456",  # 256 MB memory-mapped reads
             "PRAGMA busy_timeout=10000",
         ):
