@@ -8,6 +8,20 @@ let guideLanguage = 'curl';
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
+/* Every customer gets one of the twelve ghost portraits, chosen from the
+   number so it is the same in every tab and across reloads. The initials stay
+   underneath as the fallback if the image cannot load. */
+const AVATAR_COUNT = 12;
+function avatarSrc(wa){
+  let hash = 0;
+  for(const ch of String(wa || '')) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
+  return `/static/assets/avatars/ghost-${String(hash % AVATAR_COUNT + 1).padStart(2, '0')}.webp`;
+}
+function avatarImg(wa){
+  return `<img class="g-avatar-img" src="${avatarSrc(wa)}" alt="" width="40" height="40" loading="lazy" decoding="async" onerror="this.remove()">`;
+}
+
+
 /* An empty state with its illustration. The text stays the content; the art is
    decoration (alt="") and simply disappears if the file is missing. */
 function emptyState(art, text){
@@ -298,7 +312,7 @@ function renderUsers(){
       <button class="user-star ${u.starred?'on':''}" data-star-wa="${esc(u.wa_id)}" aria-pressed="${!!u.starred}"
               title="${u.starred?'Remove '+name+' from favourites':'Add '+name+' to favourites'}"
               aria-label="${u.starred?'Remove from favourites':'Add to favourites'}"><svg class="ico"><use href="#i-star"/></svg></button>
-      <div class="avatar wa" style="background:${esc(color)}1f;color:${esc(color)}">${esc(initials(u.display_name))}</div>
+      <div class="avatar wa g-avatar" style="background:${esc(color)}1f;color:${esc(color)}">${esc(initials(u.display_name))}${avatarImg(u.wa_id)}</div>
       <div class="grow user-id">
         <b title="${name}">${name}${u.auto_created ? '<span class="badge gray" title="Created automatically on first message">auto</span>' : ''}</b>
         <small title="+${esc(u.wa_id)}">+${esc(u.wa_id)}${lastSeenFor(u.wa_id)?' · '+esc(new Date(lastSeenFor(u.wa_id)).toLocaleTimeString()):''}</small>
@@ -1352,7 +1366,7 @@ function renderDashNumbers(){
     return `<div class="dash-number ${u.starred?'starred':''}">
       <button type="button" class="dash-number-open" data-open-wa="${esc(u.wa_id)}"
               title="Open ${esc(u.display_name||u.wa_id)} in the phone simulator">
-        <span class="avatar wa" style="background:${esc(color)}1f;color:${esc(color)}">${esc(initials(u.display_name))}</span>
+        <span class="avatar wa g-avatar" style="background:${esc(color)}1f;color:${esc(color)}">${esc(initials(u.display_name))}${avatarImg(u.wa_id)}</span>
         <span class="dash-number-main">
           <span class="dash-number-name">${esc(u.display_name)}${u.auto_created?'<span class="badge gray">auto</span>':''}</span>
           <span class="dash-number-id">+${esc(u.wa_id)}</span>
@@ -1494,7 +1508,7 @@ function analyticsNumberTable(customers, total){
       <div class="an-rows">${customers.map(c=>`
         <button type="button" class="an-row" data-open-wa="${esc(c.wa_id)}"
                 title="Open ${esc(c.display_name||c.wa_id)} in the phone simulator">
-          <span class="an-av" style="background:${esc(c.color||'#25D366')}1f;color:${esc(c.color||'#25D366')}">${esc(initials(c.display_name||c.wa_id))}</span>
+          <span class="an-av g-avatar" style="background:${esc(c.color||'#25D366')}1f;color:${esc(c.color||'#25D366')}">${esc(initials(c.display_name||c.wa_id))}${avatarImg(c.wa_id)}</span>
           <span class="an-row-main">
             <span class="an-row-name">${esc(c.display_name||c.wa_id)}${c.starred?'<svg class="ico an-star"><use href="#i-star"/></svg>':''}</span>
             <span class="an-row-sub">+${esc(c.wa_id)} · ${c.businesses||0} sender${c.businesses===1?'':'s'}${c.last_at?' · '+esc(new Date(c.last_at).toLocaleString()):''}</span>
@@ -1764,17 +1778,3 @@ async function handleConsoleEvent(data){
   }
 }
 
-/* ---- theme: system, light or dark; remembered per browser ---- */
-function applyThemeChoice(choice){
-  if(choice === 'light' || choice === 'dark') document.documentElement.dataset.theme = choice;
-  else delete document.documentElement.dataset.theme;
-  try{
-    if(choice === 'light' || choice === 'dark') localStorage.setItem('ghost-theme', choice);
-    else localStorage.removeItem('ghost-theme');
-  }catch{ /* private window: the choice lasts for this page only */ }
-  document.querySelectorAll('[data-theme-choice]').forEach(button=>
-    button.setAttribute('aria-pressed', String(button.dataset.themeChoice === (choice || 'system'))));
-}
-document.querySelectorAll('[data-theme-choice]').forEach(button=>
-  button.addEventListener('click', event=>{ event.stopPropagation(); applyThemeChoice(button.dataset.themeChoice); }));
-applyThemeChoice(document.documentElement.dataset.theme || 'system');

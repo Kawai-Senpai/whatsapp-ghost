@@ -18,6 +18,20 @@ const state = {
 const FEED_LIMIT = 60;
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+/* Every customer gets one of the twelve ghost portraits, chosen from the
+   number so it is the same in every tab and across reloads. The initials stay
+   underneath as the fallback if the image cannot load. */
+const AVATAR_COUNT = 12;
+function avatarSrc(wa){
+  let hash = 0;
+  for(const ch of String(wa || '')) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
+  return `/static/assets/avatars/ghost-${String(hash % AVATAR_COUNT + 1).padStart(2, '0')}.webp`;
+}
+function avatarImg(wa){
+  return `<img class="g-avatar-img" src="${avatarSrc(wa)}" alt="" width="40" height="40" loading="lazy" decoding="async" onerror="this.remove()">`;
+}
+
 const initials = s => (s||'?').trim().slice(0,2).toUpperCase();
 const fmtTime = ts => new Date(ts).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
 
@@ -357,6 +371,8 @@ function applyMeAvatar(me){
   const avatar = $('#me-avatar');
   if(!avatar) return;
   avatar.textContent = initials(me?.display_name || state.wa || 'Y');
+  avatar.classList.add('g-avatar');
+  if(state.wa) avatar.insertAdjacentHTML('beforeend', avatarImg(state.wa));
   if(me?.color){ avatar.style.background = me.color; avatar.style.color = '#fff'; }
   // Which mobile this tab is acting as. With several simulator tabs open it was
   // otherwise only inferable from the avatar's two letters.
@@ -1473,7 +1489,7 @@ function renderMobiles(){
     const starred = !!u.starred;
     return `<div class="mobile-row ${count?'unread':''} ${mine?'current':''} ${starred?'starred':''}" data-open-wa="${esc(u.wa_id)}"
         title="${esc(u.display_name||u.wa_id)} · +${esc(u.wa_id)}">
-      <div class="mobile-av" style="background:${esc(u.color||'#6a7175')}">${esc(initials(u.display_name||u.wa_id))}</div>
+      <div class="mobile-av g-avatar" style="background:${esc(u.color||'#6a7175')}">${esc(initials(u.display_name||u.wa_id))}${avatarImg(u.wa_id)}</div>
       <div class="mobile-main">
         <div class="mobile-name">${esc(u.display_name||u.wa_id)}${u.auto_created?'<span class="tag-auto">auto</span>':''}</div>
         <div class="mobile-num">+${esc(u.wa_id)}${mine?' · this tab':''}</div>

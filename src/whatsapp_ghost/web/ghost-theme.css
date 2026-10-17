@@ -1,10 +1,11 @@
 /* ===== Ghost brand layer =====
    Loaded after console.css / phone.css. The page stylesheets own layout; this
-   file owns the look: palette, type, depth and the dark theme. Tokens follow
+   file owns the look: palette, type and depth. Light only. Tokens follow
    docs/design/ASSET_PROMPTS.md. The console's legacy token names (--fb-blue,
    --meta-bg, ...) are remapped here so every existing rule picks up the brand
    without being rewritten. */
 :root{
+  color-scheme:light;
   --g-ink:#0E1726; --g-ink-muted:#5B6478; --g-canvas:#F4F6FB; --g-surface:#FFFFFF;
   --g-surface-2:#F8FAFD; --g-line:#E1E5EE; --g-line-strong:#CDD3E0;
   --g-spectral:#16B98C; --g-spectral-strong:#0E9C75; --g-spectral-soft:#DDF7EE;
@@ -16,7 +17,11 @@
   --g-font:"Inter","Inter Variable",system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
   --g-mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Consolas,monospace;
 
-  /* console.css legacy names */
+}
+
+/* console.css's own token names, remapped for the console only: phone.css
+   uses some of the same names (--panel, --ink, --line) for its own palette. */
+body.ghost-console{
   --fb-blue:var(--g-spectral); --fb-blue-dark:var(--g-spectral-strong);
   --meta-bg:var(--g-canvas); --panel:var(--g-surface); --ink:var(--g-ink); --muted:var(--g-ink-muted);
   --line:var(--g-line); --line-soft:var(--g-line); --hover:var(--g-surface-2);
@@ -28,31 +33,6 @@
   --focus:var(--g-ring); --sidebar:var(--g-surface);
   --panel-2:var(--g-surface-2); --line-2:var(--g-line-strong); --line-strong:var(--g-line-strong);
   --accent-soft:var(--g-spectral-soft); --star-bg:var(--g-warn-soft); --star-line:color-mix(in srgb,var(--g-warn) 45%,transparent);
-  color-scheme:light;
-}
-
-/* Dark: chosen explicitly, or by the system when no choice was made. */
-:root[data-theme="dark"]{
-  --g-ink:#E8ECF5; --g-ink-muted:#98A2B8; --g-canvas:#0B111C; --g-surface:#131B2A;
-  --g-surface-2:#182235; --g-line:#232E42; --g-line-strong:#33405A;
-  --g-spectral:#3DDBB0; --g-spectral-strong:#2BC79C; --g-spectral-soft:#12382F;
-  --g-aura:#9D92FF; --g-aura-soft:#26224A;
-  --g-warn:#F5B547; --g-warn-soft:#3A2C0E; --g-danger:#F0607A; --g-danger-soft:#3D1620;
-  --g-shadow:0 1px 2px rgba(0,0,0,.35); --g-shadow-lift:0 8px 24px rgba(0,0,0,.45);
-  --g-ring:0 0 0 3px rgba(61,219,176,.32);
-  color-scheme:dark;
-}
-@media (prefers-color-scheme: dark){
-  :root:not([data-theme="light"]){
-    --g-ink:#E8ECF5; --g-ink-muted:#98A2B8; --g-canvas:#0B111C; --g-surface:#131B2A;
-    --g-surface-2:#182235; --g-line:#232E42; --g-line-strong:#33405A;
-    --g-spectral:#3DDBB0; --g-spectral-strong:#2BC79C; --g-spectral-soft:#12382F;
-    --g-aura:#9D92FF; --g-aura-soft:#26224A;
-    --g-warn:#F5B547; --g-warn-soft:#3A2C0E; --g-danger:#F0607A; --g-danger-soft:#3D1620;
-    --g-shadow:0 1px 2px rgba(0,0,0,.35); --g-shadow-lift:0 8px 24px rgba(0,0,0,.45);
-    --g-ring:0 0 0 3px rgba(61,219,176,.32);
-    color-scheme:dark;
-  }
 }
 
 /* ---------- console ---------- */
@@ -125,21 +105,6 @@ body.ghost-console a{color:var(--g-spectral-strong)}
 .ghost-console .toast{background:var(--g-ink);color:var(--g-canvas);border-radius:12px}
 .ghost-console .toast.bad{background:var(--g-danger);color:#fff}
 
-/* Hard-coded light surfaces in console.css that would glare in dark mode. */
-:root[data-theme="dark"] .ghost-console :is(.endpoint,.secret,.hierarchy-strip,.info-callout,.task .check,.subnumber){
-  background:var(--g-surface-2);color:var(--g-ink);border-color:var(--g-line);
-}
-@media (prefers-color-scheme: dark){
-  :root:not([data-theme="light"]) .ghost-console :is(.endpoint,.secret,.hierarchy-strip,.info-callout,.task .check,.subnumber){
-    background:var(--g-surface-2);color:var(--g-ink);border-color:var(--g-line);
-  }
-}
-
-/* Theme switch in the account menu */
-.ghost-console .theme-row{display:flex;gap:4px;padding:6px 10px 10px}
-.ghost-console .theme-row button{flex:1;padding:6px 0;border-radius:8px;border:1px solid var(--g-line);background:var(--g-surface-2);font-size:12px;color:var(--g-ink-muted)}
-.ghost-console .theme-row button[aria-pressed="true"]{background:var(--g-spectral-soft);border-color:var(--g-spectral);color:var(--g-ink);font-weight:600}
-
 /* ---------- phone simulator chrome ----------
    The chat surface stays deliberately close to the real client so developers
    see roughly what a customer sees. Only the Ghost-owned chrome is branded. */
@@ -147,6 +112,12 @@ body.ghost-phone{font-family:var(--g-font);-webkit-font-smoothing:antialiased}
 .ghost-phone .inbox{background:#0B111C}
 .ghost-phone .mobiles-more{padding:10px;text-align:center;font-size:12px;color:#98A2B8}
 .ghost-phone .inbox-foot{color:#98A2B8}
+
+/* ---------- avatars: always round, portrait over initials ---------- */
+.g-avatar{position:relative;overflow:hidden;border-radius:50%!important;flex:0 0 auto}
+.g-avatar-img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;border-radius:50%;display:block}
+.ghost-console .avatar.wa.g-avatar{width:40px;height:40px;display:grid;place-items:center;font-weight:700}
+.ghost-console .an-av.g-avatar{width:30px;height:30px}
 
 /* ---------- illustrations ---------- */
 .empty.has-art{display:flex;flex-direction:column;align-items:center;gap:6px;padding:28px 24px}

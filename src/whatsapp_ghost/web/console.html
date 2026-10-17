@@ -6,7 +6,6 @@
   <title>Ghost Developer Console</title>
   <link rel="icon" type="image/png" sizes="32x32" href="/static/assets/favicon-32.png">
   <link rel="apple-touch-icon" href="/static/assets/favicon-180.png">
-  <script>try{var t=localStorage.getItem('ghost-theme');if(t==='light'||t==='dark')document.documentElement.dataset.theme=t;}catch(e){}</script>
   <link rel="stylesheet" href="/static/console.css">
   <link rel="stylesheet" href="/static/ghost-theme.css">
 </head>
@@ -72,11 +71,6 @@
         <button type="button" role="menuitem" data-page="apps">Apps &amp; Tokens</button>
         <button type="button" role="menuitem" onclick="copyBaseUrl()">Copy base URL</button>
         <button type="button" role="menuitem" onclick="reloadConsole()">Reload data</button>
-        <div class="theme-row" role="group" aria-label="Theme">
-          <button type="button" data-theme-choice="system">System</button>
-          <button type="button" data-theme-choice="light">Light</button>
-          <button type="button" data-theme-choice="dark">Dark</button>
-        </div>
       </div>
     </div>
   </header>

@@ -25,6 +25,47 @@ SUPPORTED_MESSAGE_TYPES = {
 }
 
 
+MEDIA_HEADER_FORMATS = {"IMAGE": "image", "VIDEO": "video", "DOCUMENT": "document", "LOCATION": "location"}
+
+
+def template_send_error(definitions: list[dict[str, Any]], sent: list[dict[str, Any]]) -> tuple[int, str] | None:
+    """What Meta rejects in a template send beyond the body parameter count.
+
+    Each of these renders fine in a sandbox that only counts body parameters
+    and then fails in production: a media header sent without its media, a
+    dynamic URL button sent without its suffix, or an empty text value.
+    """
+    sent_header = next((c for c in sent if str(c.get("type", "")).lower() == "header"), None)
+    header = next((d for d in definitions if str(d.get("type", "")).upper() == "HEADER"), None)
+    if header:
+        media = MEDIA_HEADER_FORMATS.get(str(header.get("format", "")).upper())
+        if media:
+            parameters = (sent_header or {}).get("parameters") or []
+            if not parameters or parameters[0].get("type") != media or not parameters[0].get(media):
+                return 132012, f"Parameter format does not match format in the created template: header requires {media}."
+        elif "{{" in str(header.get("text", "")):
+            expected = len(set(re.findall(r"\{\{(\d+)\}\}", header.get("text", ""))))
+            actual = len((sent_header or {}).get("parameters") or [])
+            if expected != actual:
+                return 132000, f"Template header expects {expected} parameter(s), but {actual} were supplied."
+    buttons = next((d.get("buttons") or [] for d in definitions if str(d.get("type", "")).upper() == "BUTTONS"), [])
+    sent_buttons = {str(c.get("index")): c for c in sent if str(c.get("type", "")).lower() == "button"}
+    for index, button in enumerate(buttons):
+        if str(button.get("type", "")).upper() == "URL" and "{{1}}" in str(button.get("url", "")):
+            component = sent_buttons.get(str(index))
+            parameters = (component or {}).get("parameters") or []
+            if not component or str(component.get("sub_type", "")).lower() != "url" or len(parameters) != 1:
+                return 131008, f"Required parameter is missing: button at index {index} is a dynamic URL and needs one text parameter."
+    for index in sent_buttons:
+        if not index.isdigit() or int(index) >= len(buttons):
+            return 131009, f"Button index {index} does not exist in this template."
+    for component in sent:
+        for parameter in component.get("parameters") or []:
+            if parameter.get("type") == "text" and not str(parameter.get("text", "")).strip():
+                return 131008, "Required parameter is missing: a text parameter is empty."
+    return None
+
+
 def location_error(location: Any) -> tuple[int, str] | None:
     """Validate a Cloud API location payload, returning (code, message).
 
@@ -201,6 +242,8 @@ class Engine:
             actual = len(sent_body.get("parameters", []))
             if expected != actual:
                 return 132000, f"Template body expects {expected} parameter(s), but {actual} were supplied."
+            if failure := template_send_error(definitions, template.get("components", [])):
+                return failure
             # Cloud API rejects a parameter value containing a newline, a tab, or
             # four or more consecutive spaces. Accepting them locally is worse
             # than useless: a multi-line value renders fine in the sandbox and
