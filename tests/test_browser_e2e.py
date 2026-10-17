@@ -369,12 +369,15 @@ def test_browser_phone_text_order_media_persistence_and_read_ticks(
 
     image_path = tmp_path / "e2e.png"
     image_path.write_bytes(ONE_PIXEL_PNG)
+    # The server is shared by the module, so earlier tests may have stored media.
+    media_dir = data_dir / "media"
+    before = {path for path in media_dir.iterdir() if path.is_file()} if media_dir.exists() else set()
     page.locator("#file-input").set_input_files(image_path)
     expect(page.locator(".msg.out img.media-thumb")).to_have_count(1)
     expect(page.locator(".msg.out img.media-thumb")).to_have_js_property("complete", True)
     assert page.locator(".msg.out img.media-thumb").evaluate("image => image.naturalWidth") > 0
 
-    media_files = [path for path in (data_dir / "media").iterdir() if path.is_file()]
+    media_files = [path for path in media_dir.iterdir() if path.is_file() and path not in before]
     assert len(media_files) == 1
     assert media_files[0].read_bytes() == ONE_PIXEL_PNG
     with httpx.Client(headers={"Authorization": "Bearer browser-token"}) as api:
@@ -577,6 +580,16 @@ def test_console_customers_sort_by_recency_when_nothing_is_unread(
 
     # Other tests in this module share the server and may leave customers with
     # unread messages, which outrank recency by design. Compare only these two.
+    # The re-sort follows a websocket event, so it is waited for, not sampled.
+    page.wait_for_function(
+        """([older, newer]) => {
+            const names = [...document.querySelectorAll('#user-list .user-id b')]
+              .map(e => e.textContent.trim());
+            return names.indexOf(newer) > -1 && names.indexOf(newer) < names.indexOf(older);
+        }""",
+        arg=[name_of(older), name_of(newer)],
+        timeout=5000,
+    )
     shown = names()
     assert name_of(newer) in shown and name_of(older) in shown
     assert shown.index(name_of(newer)) < shown.index(name_of(older)), shown

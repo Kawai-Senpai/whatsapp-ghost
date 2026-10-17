@@ -407,13 +407,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         wa_id = normalize_phone(str(body.get("wa_id", "")))
         if not wa_id:
             return JSONResponse({"error": "wa_id is required"}, status_code=400)
-        # INSERT OR REPLACE rewrites the whole row, so an existing favourite has
-        # to be carried over explicitly or re-adding a number silently unstars it.
+        # An upsert, not INSERT OR REPLACE: replacing deletes the row, which
+        # would zero the trigger-kept unread/message totals and unstar a
+        # favourite whenever an existing number is re-added.
         existing = engine.user(wa_id)
         was_starred = bool(existing["starred"]) if existing and "starred" in existing.keys() else False
         store.execute(
-            "INSERT OR REPLACE INTO simulated_users(wa_id,display_name,online,blocked,created_at,color,auto_created,starred)"
-            " VALUES(?,?,?,?,?,?,?,?)",
+            "INSERT INTO simulated_users(wa_id,display_name,online,blocked,created_at,color,auto_created,starred)"
+            " VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(wa_id) DO UPDATE SET display_name=excluded.display_name,"
+            " online=excluded.online, blocked=excluded.blocked, color=excluded.color,"
+            " auto_created=excluded.auto_created, starred=excluded.starred",
             (
                 wa_id,
                 body.get("display_name") or generated_name(wa_id),
@@ -428,6 +431,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         created = dict(engine.user(wa_id))
         engine._announce({"event": "phone_created", "wa_id": wa_id, "user": created})
         return created
+
+    @app.get("/_sandbox/phones/{wa_id}")
+    def sandbox_phone_get(wa_id: str):
+        # A phone tab acts as one customer, who may not be on the first roster
+        # page once the sandbox holds thousands of them.
+        user = engine.user(wa_id)
+        if not user:
+            return JSONResponse({"error": "phone not found"}, status_code=404)
+        return dict(user)
 
     @app.delete("/_sandbox/phones/{wa_id}")
     def sandbox_phone_delete(wa_id: str):

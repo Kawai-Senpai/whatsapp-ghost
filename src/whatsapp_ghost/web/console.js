@@ -93,9 +93,11 @@ async function loadAll(){
     // /console took minutes on a sandbox that had been running a while.
     const [apps,biz,users,stats] = await Promise.all([
       req('/_sandbox/apps'), req('/_sandbox/businesses'),
-      req('/_sandbox/phones'), req('/_sandbox/stats').catch(()=>null)
+      req(CONSOLE_ROSTER_URL), req('/_sandbox/stats').catch(()=>null)
     ]);
     state.apps=apps.data; state.businesses=biz.data; state.users=users.data;
+    state.usersMore = !!users.has_more;
+    loadSimUnread();
     state.stats = stats || {};
 
     $('#base-small').textContent = state.config.base_url.replace(/^https?:\/\//,'');
@@ -145,7 +147,8 @@ function renderMetrics(){
   const messages = state.stats?.messages ?? state.messages.length;
   if($('#m-apps')) $('#m-apps').textContent = state.apps.length;
   if($('#m-numbers')) $('#m-numbers').textContent = numbers;
-  if($('#m-users')) $('#m-users').textContent = state.users.length;
+  const customers = state.stats?.customers ?? state.users.length;
+  if($('#m-users')) $('#m-users').textContent = Number(customers).toLocaleString();
   if($('#m-messages')) $('#m-messages').textContent = messages.toLocaleString();
 
   setTask('task-number', numbers>0); setTask('s-number', numbers>0);
@@ -225,7 +228,9 @@ function renderUsers(){
       || lastSeenFor(b.wa_id)-lastSeenFor(a.wa_id)
       || String(a.display_name||'').localeCompare(String(b.display_name||'')));
   const counter = $('#user-count');
-  if(counter) counter.textContent = q ? `${shown.length} of ${all.length}` : `${all.length}`;
+  const total = state.stats?.customers ?? all.length;
+  if(counter) counter.textContent = q ? `${shown.length} of ${all.length}`
+    : (state.usersMore ? `${all.length} most recent of ${Number(total).toLocaleString()}` : `${all.length}`);
   const filterWrap = $('#user-filter-wrap');
   // The list is unbounded once autocreate is on, so only offer search when it helps.
   if(filterWrap) filterWrap.hidden = all.length < 8;
@@ -1023,24 +1028,61 @@ function reloadConsole(){ loadAll().then(()=>gsWarmIndex()); toast('Reloading sa
 
 function unreadFor(wa){ return state.unread.get(wa) || 0; }
 
+/* The console shows the most recently active customers, one bounded page of
+   them: a sandbox with a million customers must not ship a million rows to
+   every console tab. Each row carries its unread and activity totals (kept by
+   triggers server-side), so badges and ordering need no second request. */
+const CONSOLE_ROSTER_URL = '/_sandbox/phones?limit=500';
+
 async function loadSimUnread(){
-  // Derived from message status server-side, so it is correct on a cold load
-  // and cannot drift from the read receipts the sandbox reports to webhooks.
-  try{
-    const d = await req('/_sandbox/unread');
-    const totals = new Map();
-    for(const row of (d.data||[])) totals.set(row.wa_id, (totals.get(row.wa_id)||0) + row.unread);
-    state.unread = totals;
-    // Recency is tracked separately because unread alone cannot order the list:
-    // once everything is read every customer sits at 0 and the order freezes
-    // alphabetically, which is exactly the "not sorting" complaint.
-    const seen = new Map();
-    for(const row of (d.activity||[])){
-      const at = new Date(row.last_at).getTime();
-      if(at > (seen.get(row.wa_id)||0)) seen.set(row.wa_id, at);
+  const totals = new Map(), seen = new Map();
+  for(const u of (state.users||[])){
+    totals.set(u.wa_id, u.unread_total || 0);
+    // Recency is tracked separately because unread alone cannot order the
+    // list: once everything is read every customer sits at 0.
+    if(u.last_activity_at) seen.set(u.wa_id, new Date(u.last_activity_at).getTime());
+  }
+  state.unread = totals;
+  state.lastSeen = seen;
+}
+
+/* Many events a second must not mean many roster downloads: they coalesce
+   into one refresh of the page. */
+/* Run fn now if it has not run recently, otherwise once more at the end of
+   the window: the first event updates the screen at once, and a burst of a
+   thousand costs a couple of requests rather than a thousand. */
+function throttled(fn, ms){
+  let last = 0, timer = null, running = false, again = false;
+  const run = async ()=>{
+    if(running){ again = true; return; }
+    running = true; last = Date.now();
+    try{ await fn(); }finally{
+      running = false;
+      if(again){ again = false; schedule(); }
     }
-    state.lastSeen = seen;
-  }catch{ /* keep the previous counts rather than blanking every badge */ }
+  };
+  const schedule = ()=>{
+    if(timer) return;
+    const wait = Math.max(0, last + ms - Date.now());
+    timer = setTimeout(()=>{ timer = null; run(); }, wait);
+  };
+  return schedule;
+}
+const scheduleConsoleRoster = throttled(async ()=>{
+  try{
+    const [users, stats] = await Promise.all([req(CONSOLE_ROSTER_URL), req('/_sandbox/stats').catch(()=>null)]);
+    state.users = users.data;
+    state.usersMore = !!users.has_more;
+    if(stats) state.stats = stats;
+  }catch{ return; }
+  await loadSimUnread();
+  renderUsers();
+  renderMetrics();
+}, 400);
+
+const reloadWebhooksSoon = throttled(()=>loadWebhooks(), 500);
+function scheduleWebhookReload(){
+  if(state.page === 'webhooks') reloadWebhooksSoon();
 }
 
 function lastSeenFor(wa){ return state.lastSeen.get(wa) || 0; }
@@ -1615,8 +1657,9 @@ async function handleConsoleEvent(data){
   // is re-fetched rather than patched: one small request that cannot drift.
   if(['phone_created','phone_deleted','phone_updated'].includes(data.event)){
     try{
-      const [users, biz] = await Promise.all([req('/_sandbox/phones'), req('/_sandbox/businesses')]);
+      const [users, biz] = await Promise.all([req(CONSOLE_ROSTER_URL), req('/_sandbox/businesses')]);
       state.users = users.data;
+      state.usersMore = !!users.has_more;
       state.businesses = biz.data;
     }catch{ return; }
     await loadSimUnread();
@@ -1647,19 +1690,29 @@ async function handleConsoleEvent(data){
     });
     // The dashboard message counter and the "Send a message" checklist item
     // both read state.messages, so it has to grow as messages arrive.
+    // Bounded: this used to grow by one entry per message for the life of the tab.
     state.messages.unshift(message);
+    if(state.messages.length > 200) state.messages.length = 200;
     bumpMessageCount(1);
     scheduleAnalyticsRefresh();
-    await loadSimUnread();
-    renderUsers();
+    // The event is applied to the loaded row at once so the list re-sorts
+    // with no round trip; the throttled refresh then reconciles with the
+    // server's trigger-kept totals.
+    const row = (state.users||[]).find(u => u.wa_id === data.wa_id);
+    if(row){
+      row.last_activity_at = message.created_at || new Date().toISOString();
+      if(!inbound) row.unread_total = (row.unread_total||0) + 1;
+      await loadSimUnread();
+      renderUsers();
+    }
     renderMetrics();
+    scheduleConsoleRoster();
     // A webhook is queued for every message, so the history is now stale.
-    if(state.page === 'webhooks') loadWebhooks();
+    scheduleWebhookReload();
     return;
   }
   if(data.event === 'status' || data.event === 'read'){
-    await loadSimUnread();
-    renderUsers();
-    if(state.page === 'webhooks') loadWebhooks();
+    scheduleConsoleRoster();
+    scheduleWebhookReload();
   }
 }

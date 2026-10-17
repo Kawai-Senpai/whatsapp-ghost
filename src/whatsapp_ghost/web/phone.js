@@ -12,6 +12,8 @@ const state = {
   unread:new Map(),                     // wa_id -> unread count, derived from message status
   chatUnread:new Map(),                 // wa_id|phone_number_id -> {unread, at}
   chatActivity:new Map(),               // phone_number_id -> last message time, for ordering
+  me:null,                              // this tab's customer; may not be on a loaded roster page
+  roster:{next:null, more:false, loading:false, seq:0},  // keyset paging of /_sandbox/phones
 };
 const FEED_LIMIT = 60;
 const $ = s => document.querySelector(s);
@@ -306,11 +308,12 @@ function isUnknownTemplate(message){
 async function boot(){
   try{
     state.config = await req('/_sandbox/config');
-    const [biz,users] = await Promise.all([req('/_sandbox/businesses'), req('/_sandbox/phones')]);
-    state.businesses = biz.data; state.users = users.data;
+    const [biz] = await Promise.all([req('/_sandbox/businesses'), loadRoster({reset:true})]);
+    state.businesses = biz.data;
     await loadTemplateDefinitions();
     if(!state.wa && state.users.length) state.wa = state.users[0].wa_id;
-    const me = state.users.find(u=>u.wa_id===state.wa);
+    await loadMe();
+    const me = state.me;
     applyMeAvatar(me);
     document.title = 'WhatsApp' + (me? ' · '+me.display_name : '');
 
@@ -1157,7 +1160,25 @@ $('#messages').addEventListener('mouseout', event=>{
   hideDiagnostics();
 });
 // A status change invalidates what the popover last showed for that message.
-$('#messages').addEventListener('scroll', ()=>{ clearTimeout(diagnosticsTimer); hideDiagnostics(); });
+// Scrolling moves bubbles out from under the pointer, so the popover closes.
+// Once the scroll settles, whatever bubble is now under a still pointer gets
+// its diagnostics: a programmatic scroll (load, new message) used to cancel a
+// hover for good until the mouse moved again.
+let diagnosticsPointer = null, diagnosticsRearm = null;
+$('#messages').addEventListener('mousemove', event=>{ diagnosticsPointer = {x:event.clientX, y:event.clientY}; });
+$('#messages').addEventListener('mouseover', event=>{ diagnosticsPointer = {x:event.clientX, y:event.clientY}; });
+$('#messages').addEventListener('mouseleave', ()=>{ diagnosticsPointer = null; });
+$('#messages').addEventListener('scroll', ()=>{
+  clearTimeout(diagnosticsTimer);
+  hideDiagnostics();
+  clearTimeout(diagnosticsRearm);
+  diagnosticsRearm = setTimeout(()=>{
+    if(!diagnosticsPointer) return;
+    const under = document.elementFromPoint(diagnosticsPointer.x, diagnosticsPointer.y);
+    const bubble = under && under.closest('.msg[data-message-id]');
+    if(bubble && $('#messages').contains(bubble)) showDiagnostics(bubble);
+  }, 200);
+});
 document.addEventListener('click',event=>{if(!event.target.closest('#convo-menu')&&!event.target.closest('#convo-menu-btn'))$('#convo-menu').classList.add('hidden');});
 document.addEventListener('click',event=>{if(!event.target.closest('.msg-action-menu')&&!event.target.closest('.msg-action-toggle'))document.querySelectorAll('.msg.actions-open').forEach(item=>item.classList.remove('actions-open'));});
 
@@ -1252,15 +1273,19 @@ async function loadUnread(){
   // Unread is derived server-side from message status, so it is already correct
   // on a cold load and cannot drift from the read receipts the sandbox sends.
   try{
-    const d = await req('/_sandbox/unread');
-    const totals = new Map(), perChat = new Map();
+    // Only this tab's customer: the roster rows carry everyone else's totals,
+    // and fetching every conversation in the sandbox per event does not scale.
+    if(!state.wa) return;
+    const d = await req('/_sandbox/unread?wa_id='+encodeURIComponent(state.wa));
+    let mine = 0;
+    const perChat = new Map();
     for(const row of (d.data||[])){
-      totals.set(row.wa_id, (totals.get(row.wa_id)||0) + row.unread);
+      mine += row.unread;
       // Keyed by mobile+business so the chat list can badge and sort each
       // conversation, not just the mobile as a whole.
       perChat.set(row.wa_id+'|'+row.phone_number_id, {unread:row.unread, at:row.last_at});
     }
-    state.unread = totals;
+    state.unread.set(state.wa, mine);
     state.chatUnread = perChat;
     const activity = new Map(), perChatTotals = new Map();
     for(const row of (d.activity||[])){
@@ -1276,6 +1301,102 @@ async function loadUnread(){
 }
 
 function unreadFor(wa){ return state.unread.get(wa) || 0; }
+
+/* ---- the customer roster, paged ----
+   The sandbox can hold far more customers than a list should render, so the
+   roster loads a page at a time off the server's keyset cursor (favourites
+   first, then most recent activity) and fetches the next page when the
+   bottom of the list scrolls into view. Search runs on the server too. */
+const ROSTER_PAGE = 100;
+
+function syncUnreadTotals(rows){
+  for(const u of rows) state.unread.set(u.wa_id, u.unread_total || 0);
+}
+
+function mergeRoster(head, rest){
+  const seen = new Set(head.map(u=>u.wa_id));
+  return head.concat(rest.filter(u=>!seen.has(u.wa_id)));
+}
+
+async function loadRoster({reset=false}={}){
+  const roster = state.roster;
+  if(!reset && (roster.loading || !roster.more)) return;
+  const seq = ++roster.seq;
+  roster.loading = true;
+  const query = new URLSearchParams({limit:String(ROSTER_PAGE)});
+  const filter = (state.mobileFilter||'').trim();
+  if(filter) query.set('q', filter);
+  if(!reset && roster.next) query.set('after', roster.next);
+  try{
+    const d = await req('/_sandbox/phones?'+query);
+    if(seq !== roster.seq) return;
+    state.users = reset ? d.data : mergeRoster(state.users, d.data);
+    roster.next = d.next_after; roster.more = !!d.has_more;
+    syncUnreadTotals(d.data);
+  }catch{ /* keep what is on screen */ }
+  finally{ if(seq === roster.seq) roster.loading = false; }
+  renderMobiles();
+}
+
+/* Traffic moves customers to the top, so the first page is re-read and laid
+   over what is loaded. Events are coalesced: a burst of a thousand messages
+   costs one small request, not a thousand full roster downloads. */
+/* Run fn now if it has not run recently, otherwise once more at the end of
+   the window: the first event updates the screen at once, and a burst of a
+   thousand costs a couple of requests rather than a thousand. */
+function throttled(fn, ms){
+  let last = 0, timer = null, running = false, again = false;
+  const run = async ()=>{
+    if(running){ again = true; return; }
+    running = true; last = Date.now();
+    try{ await fn(); }finally{
+      running = false;
+      if(again){ again = false; schedule(); }
+    }
+  };
+  const schedule = ()=>{
+    if(timer) return;
+    const wait = Math.max(0, last + ms - Date.now());
+    timer = setTimeout(()=>{ timer = null; run(); }, wait);
+  };
+  return schedule;
+}
+const scheduleRosterRefresh = throttled(()=>refreshRosterHead(), 400);
+
+async function refreshRosterHead(){
+  const roster = state.roster;
+  const seq = roster.seq;
+  const query = new URLSearchParams({limit:String(ROSTER_PAGE)});
+  const filter = (state.mobileFilter||'').trim();
+  if(filter) query.set('q', filter);
+  try{
+    const d = await req('/_sandbox/phones?'+query);
+    if(seq !== roster.seq) return;  // a search or reset replaced the list meanwhile
+    const onlyHead = state.users.length <= ROSTER_PAGE;
+    state.users = mergeRoster(d.data, state.users);
+    if(onlyHead){ roster.next = d.next_after; roster.more = !!d.has_more; }
+    syncUnreadTotals(d.data);
+  }catch{ return; }
+  renderMobiles();
+  renderFeed();
+}
+
+async function loadMe(){
+  if(!state.wa){ state.me = null; return; }
+  try{ state.me = await req('/_sandbox/phones/'+encodeURIComponent(state.wa)); }
+  catch{ state.me = state.users.find(u=>u.wa_id===state.wa) || null; }
+}
+
+let rosterObserver = null;
+function watchRosterEnd(){
+  const box = $('#mobiles'), end = $('#mobiles-more');
+  if(rosterObserver) rosterObserver.disconnect();
+  if(!box || !end || !('IntersectionObserver' in window)) return;
+  rosterObserver = new IntersectionObserver(entries=>{
+    if(entries.some(e=>e.isIntersecting)) loadRoster();
+  }, {root:box, rootMargin:'200px'});
+  rosterObserver.observe(end);
+}
 
 /* ---- oversized chat warning ----
    Past this many messages the transcript is slow to page through and the
@@ -1312,31 +1433,22 @@ $('#bloat-dismiss').addEventListener('click', ()=>{
   $('#chat-bloat').classList.add('hidden');
 });
 
-function mobileMatches(user, query){
-  if(!query) return true;
-  return (String(user.display_name||'') + ' ' + user.wa_id).toLowerCase().includes(query);
-}
-
 function renderMobiles(){
   const box = $('#mobiles');
   if(!box) return;
+  const query = (state.mobileFilter || '').trim();
   if(!state.users.length){
-    box.innerHTML = '<div class="mobiles-empty">No test numbers yet.<br>Use + to add one.</div>';
+    box.innerHTML = query
+      ? `<div class="mobiles-empty">No number matches “${esc(query)}”.</div>`
+      : '<div class="mobiles-empty">No test numbers yet.<br>Use + to add one.</div>';
     return;
   }
-  const query = (state.mobileFilter || '').trim().toLowerCase();
-  // Favourites first, then whatever is waiting on a reply, then by name. A
-  // starred number outranks unread deliberately: once autocreate has filled the
-  // roster, the handful you actually test with must stay at the top whether or
-  // not a stranger's chat happens to be unread right now.
-  const ordered = state.users.filter(u => mobileMatches(u, query)).sort((a,b)=>
-    Number(!!b.starred)-Number(!!a.starred)
-    || unreadFor(b.wa_id)-unreadFor(a.wa_id)
-    || String(a.display_name||'').localeCompare(String(b.display_name||'')));
-  if(!ordered.length){
-    box.innerHTML = `<div class="mobiles-empty">No number matches “${esc(query)}”.</div>`;
-    return;
-  }
+  // The server already orders favourites first, then most recent activity. A
+  // starred number outranks everything deliberately: once autocreate has
+  // filled the roster, the handful you actually test with must stay on top.
+  // The client only re-applies the star so an optimistic toggle moves at once.
+  const ordered = state.users.map((u,i)=>[u,i]).sort((a,b)=>
+    Number(!!b[0].starred)-Number(!!a[0].starred) || a[1]-b[1]).map(pair=>pair[0]);
   box.innerHTML = ordered.map(u=>{
     const count = unreadFor(u.wa_id);
     const mine = u.wa_id===state.wa;
@@ -1355,7 +1467,8 @@ function renderMobiles(){
               title="Edit ${esc(u.display_name||u.wa_id)}" aria-label="Edit ${esc(u.display_name||u.wa_id)}"><svg><use href="#p-edit"/></svg></button>
       ${count?`<span class="badge-unread">${count>99?'99+':count}</span>`:''}
     </div>`;
-  }).join('');
+  }).join('') + (state.roster.more ? '<div class="mobiles-more" id="mobiles-more">Loading more numbers…</div>' : '');
+  watchRosterEnd();
 }
 
 /* ---- add / edit a test number, without a trip to the console ---- */
@@ -1434,14 +1547,13 @@ async function deleteMobileFromSheet(){
 
 async function refreshRoster(){
   try{
-    const users = await req('/_sandbox/phones');
-    state.users = users.data;
+    await Promise.all([loadRoster({reset:true}), loadMe()]);
   }catch{ return; }
   await loadUnread();
   renderMobiles();
   renderChatList();
   renderFeed();
-  applyMeAvatar(state.users.find(u=>u.wa_id===state.wa));
+  applyMeAvatar(state.me);
 }
 
 $('#mobile-add').addEventListener('click', ()=>openMobileSheet(null));
@@ -1450,7 +1562,12 @@ $('#mobile-cancel').addEventListener('click', closeMobileSheet);
 $('#mobile-close').addEventListener('click', closeMobileSheet);
 $('#mobile-delete').addEventListener('click', deleteMobileFromSheet);
 $('#mobile-sheet').addEventListener('click', event=>{ if(event.target.id==='mobile-sheet') closeMobileSheet(); });
-$('#mobile-search').addEventListener('input', event=>{ state.mobileFilter = event.target.value; renderMobiles(); });
+let rosterSearchTimer = null;
+$('#mobile-search').addEventListener('input', event=>{
+  state.mobileFilter = event.target.value;
+  clearTimeout(rosterSearchTimer);
+  rosterSearchTimer = setTimeout(()=>loadRoster({reset:true}), 200);
+});
 document.addEventListener('keydown', event=>{ if(event.key==='Escape' && !$('#mobile-sheet').hidden) closeMobileSheet(); });
 
 function businessName(phoneId){
@@ -1458,7 +1575,7 @@ function businessName(phoneId){
   return p ? p.verified_name : (phoneId || 'Business');
 }
 function mobileName(wa){
-  const u = state.users.find(x=>x.wa_id===wa);
+  const u = state.users.find(x=>x.wa_id===wa) || (state.me?.wa_id===wa ? state.me : null);
   return u ? (u.display_name||wa) : wa;
 }
 
@@ -1606,14 +1723,17 @@ async function handleObserverEvent(data){
   // manual refresh, so the roster is re-fetched rather than patched: it is one
   // small request and it cannot drift from the server.
   if(['phone_created','phone_deleted','phone_updated'].includes(data.event)){
-    try{
-      const users = await req('/_sandbox/phones');
-      state.users = users.data;
-    }catch{ return; }
-    await loadUnread();
+    if(data.event==='phone_deleted') state.users = state.users.filter(u=>u.wa_id!==data.wa_id);
+    if(data.user){
+      const index = state.users.findIndex(u=>u.wa_id===data.wa_id);
+      if(index >= 0) state.users[index] = {...state.users[index], ...data.user};
+      else if(data.event==='phone_created') state.users.unshift(data.user);
+    }
+    if(data.wa_id===state.wa){ await loadMe(); applyMeAvatar(state.me); }
     renderMobiles();
     renderChatList();
     renderFeed();
+    scheduleRosterRefresh();
     if(data.event==='phone_created'){
       const row = document.querySelector(`.mobile-row[data-open-wa="${CSS.escape(data.wa_id||'')}"]`);
       if(row) row.classList.add('just-added');
@@ -1628,9 +1748,17 @@ async function handleObserverEvent(data){
     const inbound = data.direction === 'inbound'
       || (message.direction||'') === 'inbound' || !!message.from;
     pushFeed(feedEntry(data.wa_id, message, inbound, data.phone_number_id));
-    await loadUnread();
-    renderMobiles();
-    renderChatList();
+    // Move the row to the top and bump its badge now; the throttled refresh in
+    // afterTraffic reconciles with the server's totals a moment later.
+    const index = state.users.findIndex(u => u.wa_id === data.wa_id);
+    if(index >= 0){
+      const [row] = state.users.splice(index, 1);
+      row.last_activity_at = message.created_at || new Date().toISOString();
+      if(!inbound && data.wa_id !== state.wa) state.unread.set(row.wa_id, unreadFor(row.wa_id) + 1);
+      state.users.unshift(row);
+      renderMobiles();
+    }
+    await afterTraffic(data.wa_id);
     return;
   }
   if(data.event==='chat_cleared'){
@@ -1639,16 +1767,19 @@ async function handleObserverEvent(data){
     state.feed = state.feed.filter(item => item.wa !== data.wa_id
       || (data.phone_number_id && item.phoneId !== data.phone_number_id));
     renderFeed();
-    await loadUnread();
-    renderMobiles();
-    renderChatList();
+    await afterTraffic(data.wa_id);
     return;
   }
-  if(data.event==='status' || data.event==='read'){
-    await loadUnread();
-    renderMobiles();
-    renderChatList();
-  }
+  if(data.event==='status' || data.event==='read') await afterTraffic(data.wa_id);
+}
+
+/* Traffic for this tab's customer refreshes its chat badges at once; anyone
+   else's only nudges the debounced roster refresh. */
+const scheduleOwnUnread = throttled(async ()=>{ await loadUnread(); renderMobiles(); renderChatList(); }, 150);
+async function afterTraffic(wa){
+  scheduleRosterRefresh();
+  if(wa && wa !== state.wa) return;
+  scheduleOwnUnread();
 }
 
 /* ---- live updates ---- */
@@ -1697,7 +1828,19 @@ function connectSocket(){
       // Read receipts move every outstanding message, so every cached
       // diagnostic for this chat describes the state before the receipt.
       diagnosticsCache.clear();
-      loadMessages();
+      // A receipt covers that message and everything the customer sent before
+      // it. Ticks are moved in place: reloading the transcript re-rendered and
+      // scrolled it, which also cancelled any hover the user had started.
+      const target = state.messages.get(data.message_id);
+      if(target){
+        const until = new Date(target.created_at).getTime();
+        for(const message of [...state.messages.values()]){
+          if(message.direction === 'inbound' && message.status !== 'read'
+             && new Date(message.created_at).getTime() <= until) applyStatus(message.id, 'read');
+        }
+      }else if(!data.message_id){
+        loadMessages();
+      }
     }
   };
   state.socket.onclose = ()=>{ if(state.wa===wa) state.reconnect=setTimeout(connectSocket,1500); };
@@ -1711,10 +1854,10 @@ $('#search').addEventListener('input', renderChatList);
 // keep business/customer names in sync with edits made in the console
 async function refreshMeta(){
   try{
-    const [biz,users] = await Promise.all([req('/_sandbox/businesses'), req('/_sandbox/phones')]);
-    state.businesses = biz.data; state.users = users.data;
-    const me = state.users.find(u=>u.wa_id===state.wa);
-    applyMeAvatar(me);
+    const [biz] = await Promise.all([req('/_sandbox/businesses'), loadMe()]);
+    state.businesses = biz.data;
+    applyMeAvatar(state.me);
+    scheduleRosterRefresh();
     renderChatList();
     if(state.activePhone){
       const p = businessPhones().find(x=>x.id===state.activePhone);
