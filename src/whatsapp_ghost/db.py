@@ -182,9 +182,31 @@ class Store:
         self._local = threading.local()
         self._lock = threading.Lock()
         self._generation = 0
-        self._connections: list[sqlite3.Connection] = []
+        # Each connection is kept with the thread that owns it. Worker threads
+        # come and go (anyio retires an idle pool thread after a few seconds),
+        # and a connection whose thread has exited would otherwise stay open
+        # forever, holding two file descriptors (db + wal) until the process
+        # hits its open-files limit and every request fails with EMFILE.
+        self._connections: list[tuple[threading.Thread, sqlite3.Connection]] = []
+
+    def _reap_dead(self) -> None:
+        """Close connections whose owning thread has exited."""
+        with self._lock:
+            dead = [entry for entry in self._connections if not entry[0].is_alive()]
+            if dead:
+                self._connections = [entry for entry in self._connections if entry[0].is_alive()]
+        for _, connection in dead:
+            try:
+                connection.close()
+            except sqlite3.Error:
+                pass
+
+    def open_connection_count(self) -> int:
+        with self._lock:
+            return len(self._connections)
 
     def _open(self) -> sqlite3.Connection:
+        self._reap_dead()
         connection = sqlite3.connect(self.path, timeout=10, check_same_thread=False)
         connection.row_factory = sqlite3.Row
         for pragma in (
@@ -201,7 +223,7 @@ class Store:
         ):
             connection.execute(pragma)
         with self._lock:
-            self._connections.append(connection)
+            self._connections.append((threading.current_thread(), connection))
         return connection
 
     def close_all(self) -> None:
@@ -209,7 +231,7 @@ class Store:
         with self._lock:
             self._generation += 1
             connections, self._connections = self._connections, []
-        for connection in connections:
+        for _, connection in connections:
             try:
                 connection.close()
             except sqlite3.Error:
