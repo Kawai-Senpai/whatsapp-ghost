@@ -315,7 +315,7 @@ async function boot(){
     await loadMe();
     const me = state.me;
     applyMeAvatar(me);
-    document.title = 'WhatsApp' + (me? ' · '+me.display_name : '');
+    document.title = 'Ghost Phone' + (me? ' · '+me.display_name : '');
 
     await loadPins();
     renderChatList();

@@ -1,0 +1,153 @@
+/* ===== Ghost brand layer =====
+   Loaded after console.css / phone.css. The page stylesheets own layout; this
+   file owns the look: palette, type, depth and the dark theme. Tokens follow
+   docs/design/ASSET_PROMPTS.md. The console's legacy token names (--fb-blue,
+   --meta-bg, ...) are remapped here so every existing rule picks up the brand
+   without being rewritten. */
+:root{
+  --g-ink:#0E1726; --g-ink-muted:#5B6478; --g-canvas:#F4F6FB; --g-surface:#FFFFFF;
+  --g-surface-2:#F8FAFD; --g-line:#E1E5EE; --g-line-strong:#CDD3E0;
+  --g-spectral:#16B98C; --g-spectral-strong:#0E9C75; --g-spectral-soft:#DDF7EE;
+  --g-aura:#7B6CF6; --g-aura-soft:#EEEBFF;
+  --g-warn:#C98A12; --g-warn-soft:#FFF4DC; --g-danger:#D9475F; --g-danger-soft:#FDE8EC;
+  --g-shadow:0 1px 2px rgba(14,23,38,.05),0 2px 6px rgba(14,23,38,.04);
+  --g-shadow-lift:0 6px 20px rgba(14,23,38,.08),0 2px 6px rgba(14,23,38,.05);
+  --g-ring:0 0 0 3px rgba(22,185,140,.28);
+  --g-font:"Inter","Inter Variable",system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  --g-mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Consolas,monospace;
+
+  /* console.css legacy names */
+  --fb-blue:var(--g-spectral); --fb-blue-dark:var(--g-spectral-strong);
+  --meta-bg:var(--g-canvas); --panel:var(--g-surface); --ink:var(--g-ink); --muted:var(--g-ink-muted);
+  --line:var(--g-line); --line-soft:var(--g-line); --hover:var(--g-surface-2);
+  --green:var(--g-spectral); --green-dark:var(--g-spectral-strong);
+  --amber:var(--g-warn); --amber-bg:var(--g-warn-soft);
+  --danger:var(--g-danger); --danger-bg:var(--g-danger-soft);
+  --ok:var(--g-spectral-strong); --ok-bg:var(--g-spectral-soft);
+  --radius:12px; --shadow:var(--g-shadow); --shadow-hover:var(--g-shadow-lift);
+  --focus:var(--g-ring); --sidebar:var(--g-surface);
+  --panel-2:var(--g-surface-2); --line-2:var(--g-line-strong); --line-strong:var(--g-line-strong);
+  --accent-soft:var(--g-spectral-soft); --star-bg:var(--g-warn-soft); --star-line:color-mix(in srgb,var(--g-warn) 45%,transparent);
+  color-scheme:light;
+}
+
+/* Dark: chosen explicitly, or by the system when no choice was made. */
+:root[data-theme="dark"]{
+  --g-ink:#E8ECF5; --g-ink-muted:#98A2B8; --g-canvas:#0B111C; --g-surface:#131B2A;
+  --g-surface-2:#182235; --g-line:#232E42; --g-line-strong:#33405A;
+  --g-spectral:#3DDBB0; --g-spectral-strong:#2BC79C; --g-spectral-soft:#12382F;
+  --g-aura:#9D92FF; --g-aura-soft:#26224A;
+  --g-warn:#F5B547; --g-warn-soft:#3A2C0E; --g-danger:#F0607A; --g-danger-soft:#3D1620;
+  --g-shadow:0 1px 2px rgba(0,0,0,.35); --g-shadow-lift:0 8px 24px rgba(0,0,0,.45);
+  --g-ring:0 0 0 3px rgba(61,219,176,.32);
+  color-scheme:dark;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --g-ink:#E8ECF5; --g-ink-muted:#98A2B8; --g-canvas:#0B111C; --g-surface:#131B2A;
+    --g-surface-2:#182235; --g-line:#232E42; --g-line-strong:#33405A;
+    --g-spectral:#3DDBB0; --g-spectral-strong:#2BC79C; --g-spectral-soft:#12382F;
+    --g-aura:#9D92FF; --g-aura-soft:#26224A;
+    --g-warn:#F5B547; --g-warn-soft:#3A2C0E; --g-danger:#F0607A; --g-danger-soft:#3D1620;
+    --g-shadow:0 1px 2px rgba(0,0,0,.35); --g-shadow-lift:0 8px 24px rgba(0,0,0,.45);
+    --g-ring:0 0 0 3px rgba(61,219,176,.32);
+    color-scheme:dark;
+  }
+}
+
+/* ---------- console ---------- */
+body.ghost-console{
+  font-family:var(--g-font);font-feature-settings:"cv11","ss01";
+  background:var(--g-canvas);color:var(--g-ink);
+  -webkit-font-smoothing:antialiased;
+}
+body.ghost-console code,body.ghost-console pre{font-family:var(--g-mono)}
+body.ghost-console a{color:var(--g-spectral-strong)}
+
+.ghost-console .metabar{
+  background:color-mix(in srgb,var(--g-surface) 82%,transparent);
+  backdrop-filter:saturate(1.4) blur(12px);-webkit-backdrop-filter:saturate(1.4) blur(12px);
+  border-bottom:1px solid var(--g-line);box-shadow:none;
+}
+.ghost-console .metabar .logo{gap:10px}
+.ghost-console .metabar .logo .infinity{width:32px;height:32px}
+.ghost-console .metabar .logo .infinity img{width:30px;height:30px;filter:none}
+.ghost-console .metabar .logo b{font-weight:700;letter-spacing:-.3px;color:var(--g-ink)}
+.ghost-console .metabar .logo .tag{
+  font-size:11px;font-weight:600;letter-spacing:.3px;text-transform:uppercase;
+  color:var(--g-aura);background:var(--g-aura-soft);padding:3px 8px;border-radius:999px;
+}
+.ghost-console .metabar nav a{color:var(--g-ink-muted);font-weight:500;border-radius:8px}
+.ghost-console .metabar nav a:hover{background:var(--g-surface-2);color:var(--g-ink)}
+.ghost-console .metabar .search{background:var(--g-surface-2);border:1px solid var(--g-line);border-radius:10px}
+.ghost-console .metabar .search:focus-within{box-shadow:var(--g-ring);border-color:var(--g-spectral)}
+.ghost-console .metabar .avatar-pill{background:var(--g-spectral-soft);color:var(--g-spectral-strong)}
+.ghost-console .menu-pop,.ghost-console .gs-results{background:var(--g-surface);border:1px solid var(--g-line);box-shadow:var(--g-shadow-lift);border-radius:12px}
+.ghost-console .menu-pop button:hover,.ghost-console .gs-item:hover,.ghost-console .gs-item.active{background:var(--g-surface-2)}
+
+.ghost-console .sidebar{background:var(--g-surface);border-right:1px solid var(--g-line)}
+.ghost-console .side-app .wa-mark{background:var(--g-spectral-soft);border-radius:10px}
+.ghost-console .side-app .wa-mark img{width:24px;height:24px}
+.ghost-console .side-section{color:var(--g-ink-muted);letter-spacing:.6px}
+.ghost-console .side-link{color:var(--g-ink-muted);border-radius:9px;font-weight:500}
+.ghost-console .side-link .ico{color:var(--g-ink-muted)}
+.ghost-console .side-link:hover{background:var(--g-surface-2);color:var(--g-ink)}
+.ghost-console .side-link.active{background:var(--g-spectral-soft);color:var(--g-ink);font-weight:600}
+.ghost-console .side-link.active::before{background:var(--g-spectral)}
+.ghost-console .side-link.active .ico{color:var(--g-spectral-strong)}
+.ghost-console .side-foot{background:var(--g-surface-2);border:1px solid var(--g-line)}
+.ghost-console .side-foot .credit a{color:var(--g-spectral-strong)}
+
+.ghost-console .content{max-width:1240px}
+.ghost-console .head h1{font-weight:700;letter-spacing:-.6px}
+.ghost-console .card,.ghost-console .item{
+  background:var(--g-surface);border:1px solid var(--g-line);border-radius:14px;box-shadow:var(--g-shadow);
+}
+.ghost-console .card:hover,.ghost-console .item:hover{box-shadow:var(--g-shadow-lift);border-color:var(--g-line-strong)}
+.ghost-console .stat strong{font-weight:700;letter-spacing:-1px}
+.ghost-console .stat .accent{color:var(--g-spectral-strong)}
+
+.ghost-console .btn{background:var(--g-spectral);color:#06231A;border-radius:10px;font-weight:600;box-shadow:0 1px 0 rgba(255,255,255,.25) inset,0 1px 2px rgba(14,23,38,.12)}
+.ghost-console .btn:hover{background:var(--g-spectral-strong)}
+.ghost-console .btn.secondary{background:var(--g-surface-2);color:var(--g-ink);border:1px solid var(--g-line);box-shadow:none}
+.ghost-console .btn.secondary:hover{background:var(--g-line)}
+.ghost-console .btn.ghost{background:transparent;color:var(--g-spectral-strong);box-shadow:none}
+.ghost-console .btn.danger{background:var(--g-danger);color:#fff}
+.ghost-console .btn.wa{background:var(--g-spectral-soft);color:var(--g-ink);border:1px solid color-mix(in srgb,var(--g-spectral) 45%,transparent);box-shadow:none}
+.ghost-console .btn.wa:hover{background:color-mix(in srgb,var(--g-spectral) 22%,var(--g-surface))}
+
+.ghost-console .field{background:var(--g-surface);border:1px solid var(--g-line);border-radius:10px;color:var(--g-ink)}
+.ghost-console .field:focus{border-color:var(--g-spectral);box-shadow:var(--g-ring)}
+.ghost-console .badge.blue{background:var(--g-aura-soft);color:var(--g-aura)}
+.ghost-console .badge.gray{background:var(--g-surface-2);color:var(--g-ink-muted)}
+.ghost-console .empty{background:var(--g-surface);border:1px dashed var(--g-line-strong);border-radius:14px}
+.ghost-console .modal{background:var(--g-surface);border:1px solid var(--g-line);border-radius:16px}
+.ghost-console .toast{background:var(--g-ink);color:var(--g-canvas);border-radius:12px}
+.ghost-console .toast.bad{background:var(--g-danger);color:#fff}
+
+/* Hard-coded light surfaces in console.css that would glare in dark mode. */
+:root[data-theme="dark"] .ghost-console :is(.endpoint,.secret,.hierarchy-strip,.info-callout,.task .check,.subnumber){
+  background:var(--g-surface-2);color:var(--g-ink);border-color:var(--g-line);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]) .ghost-console :is(.endpoint,.secret,.hierarchy-strip,.info-callout,.task .check,.subnumber){
+    background:var(--g-surface-2);color:var(--g-ink);border-color:var(--g-line);
+  }
+}
+
+/* Theme switch in the account menu */
+.ghost-console .theme-row{display:flex;gap:4px;padding:6px 10px 10px}
+.ghost-console .theme-row button{flex:1;padding:6px 0;border-radius:8px;border:1px solid var(--g-line);background:var(--g-surface-2);font-size:12px;color:var(--g-ink-muted)}
+.ghost-console .theme-row button[aria-pressed="true"]{background:var(--g-spectral-soft);border-color:var(--g-spectral);color:var(--g-ink);font-weight:600}
+
+/* ---------- phone simulator chrome ----------
+   The chat surface stays deliberately close to the real client so developers
+   see roughly what a customer sees. Only the Ghost-owned chrome is branded. */
+body.ghost-phone{font-family:var(--g-font);-webkit-font-smoothing:antialiased}
+.ghost-phone .inbox{background:#0B111C}
+.ghost-phone .mobiles-more{padding:10px;text-align:center;font-size:12px;color:#98A2B8}
+.ghost-phone .inbox-foot{color:#98A2B8}
+
+@media (prefers-reduced-motion: reduce){
+  .ghost-console *,.ghost-phone *{transition:none!important;animation:none!important}
+}

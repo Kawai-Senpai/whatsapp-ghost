@@ -46,7 +46,9 @@ only saturated colours; everything else is ink, mist and white.
 ### Type
 
 Inter for UI (400, 500, 600, 700), JetBrains Mono for ids, payloads and
-code. Load from Google Fonts with the system stack as fallback.
+code. Ghost runs offline, so fonts are never fetched from a CDN: the stack uses
+Inter when it is installed and falls back to system-ui. To ship Inter, add the
+woff2 files under `web/assets/fonts/` with an `@font-face` in `ghost-theme.css`.
 
 ### UX principles (from the premium-apps research)
 

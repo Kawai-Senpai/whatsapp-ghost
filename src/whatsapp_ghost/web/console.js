@@ -1716,3 +1716,18 @@ async function handleConsoleEvent(data){
     scheduleWebhookReload();
   }
 }
+
+/* ---- theme: system, light or dark; remembered per browser ---- */
+function applyThemeChoice(choice){
+  if(choice === 'light' || choice === 'dark') document.documentElement.dataset.theme = choice;
+  else delete document.documentElement.dataset.theme;
+  try{
+    if(choice === 'light' || choice === 'dark') localStorage.setItem('ghost-theme', choice);
+    else localStorage.removeItem('ghost-theme');
+  }catch{ /* private window: the choice lasts for this page only */ }
+  document.querySelectorAll('[data-theme-choice]').forEach(button=>
+    button.setAttribute('aria-pressed', String(button.dataset.themeChoice === (choice || 'system'))));
+}
+document.querySelectorAll('[data-theme-choice]').forEach(button=>
+  button.addEventListener('click', event=>{ event.stopPropagation(); applyThemeChoice(button.dataset.themeChoice); }));
+applyThemeChoice(document.documentElement.dataset.theme || 'system');
