@@ -12,6 +12,60 @@ NAMED_RE = re.compile(r"\{\{([a-z][a-z0-9_]*)\}\}")
 ANY_PLACEHOLDER_RE = re.compile(r"\{\{([^{}]+)\}\}")
 
 
+#: Locales Meta accepts for message templates. Anything else is refused at
+#: submission (subcode 2388049), so the sandbox refuses it too.
+META_TEMPLATE_LANGUAGES = frozenset({
+    "af", "sq", "ar", "az", "bn", "bg", "ca", "zh_CN", "zh_HK", "zh_TW",
+    "hr", "cs", "da", "nl", "en", "en_GB", "en_US", "et", "fil", "fi",
+    "fr", "ka", "de", "el", "gu", "ha", "he", "hi", "hu", "id", "ga",
+    "it", "ja", "kn", "kk", "rw_RW", "ko", "ky_KG", "lo", "lv", "lt",
+    "mk", "ms", "ml", "mr", "nb", "fa", "pl", "pt_BR", "pt_PT", "pa",
+    "ro", "ru", "sr", "si_LK", "sk", "sl", "es", "es_AR", "es_ES",
+    "es_MX", "sw", "sv", "ta", "te", "th", "tr", "uk", "ur", "uz",
+    "vi", "zu",
+})
+
+# "Too many variables for its length". Meta does not publish the rule, so both
+# lines are fitted to 637 real Meta verdicts on body text with the placeholders
+# removed. Below the reject line Meta refused every sample and approved none;
+# between it and the warning line Meta refused some and approved others, so
+# the sandbox accepts those but says the template is at risk.
+DENSITY_REJECT_BASE, DENSITY_REJECT_PER_VARIABLE = 5, 9
+# The verdicts span 4 to 22 variables; below 4 the sandbox only warns rather than guess.
+DENSITY_REJECT_MIN_VARIABLES = 4
+DENSITY_WARN_BASE, DENSITY_WARN_PER_VARIABLE = 55, 7
+
+
+def _static_text(text: str) -> str:
+    return ANY_PLACEHOLDER_RE.sub("", text).strip()
+
+
+def template_warnings(payload: dict[str, Any]) -> list[str]:
+    """Things Meta often rejects that the sandbox lets through."""
+    warnings: list[str] = []
+    for component in payload.get("components") or []:
+        if not isinstance(component, dict):
+            continue
+        kind = str(component.get("type", "")).upper()
+        if kind == "BODY" and isinstance(component.get("text"), str):
+            count = len(set(ANY_PLACEHOLDER_RE.findall(component["text"])))
+            needed = DENSITY_WARN_BASE + DENSITY_WARN_PER_VARIABLE * count
+            have = len(_static_text(component["text"]))
+            if count and have < needed:
+                warnings.append(
+                    f"BODY has {count} variables and {have} characters of fixed text; Meta often "
+                    f"rejects this as too many variables for its length (aim for {needed}+)."
+                )
+        if kind == "HEADER" and str(component.get("format", "")).upper() in {"IMAGE", "VIDEO", "DOCUMENT"}:
+            handles = (component.get("example") or {}).get("header_handle") or []
+            if any(isinstance(h, str) and h.startswith(("http://", "https://")) for h in handles):
+                warnings.append(
+                    "HEADER example is a URL. Meta requires a resumable-upload handle "
+                    "(POST /{app_id}/uploads) and rejects a URL."
+                )
+    return warnings
+
+
 @dataclass(frozen=True)
 class TemplateValidationError:
     details: str
@@ -29,6 +83,11 @@ def validate_template(payload: dict[str, Any]) -> TemplateValidationError | None
         )
     if not isinstance(payload["language"], str) or not LOCALE_RE.fullmatch(payload["language"]):
         return TemplateValidationError("Template language is not a supported locale identifier.")
+    if payload["language"] not in META_TEMPLATE_LANGUAGES:
+        return TemplateValidationError(
+            f"{payload['language']} is not a supported language for message templates.",
+            subcode=2388049,
+        )
     category = str(payload["category"]).upper()
     if category not in {"UTILITY", "MARKETING", "AUTHENTICATION"}:
         return TemplateValidationError(
@@ -86,9 +145,14 @@ def _validate_placeholder_syntax(text: str, parameter_format: str) -> TemplateVa
         if not expected.fullmatch(match.group(0)):
             return TemplateValidationError(f"Invalid {parameter_format.lower()} parameter {match.group(0)}.")
     variables = _variables(text, parameter_format)
-    if variables and (expected.match(text) or expected.search(text.rstrip()) and expected.search(text.rstrip()).end() == len(text.rstrip())):
+    # Meta checks the LAST placeholder against the end of the text. Checking only
+    # the first one let "Destination: {{1}}\nArrival: {{2}}" through locally
+    # while Meta refused it.
+    stripped = text.strip()
+    matches = list(expected.finditer(stripped))
+    if matches and (matches[0].start() == 0 or matches[-1].end() == len(stripped)):
         return TemplateValidationError(
-            "Parameters cannot appear at the beginning or end of component text.", subcode=2388299
+            "Variables can't be at the start or end of the template.", subcode=2388299
         )
     if re.search(r"\}\}\s*\{\{", text):
         return TemplateValidationError("Adjacent template parameters are not allowed.")
@@ -110,6 +174,13 @@ def _validate_body(body: dict[str, Any], parameter_format: str) -> TemplateValid
     variables = set(_variables(text, parameter_format))
     if not variables:
         return None
+    if (len(variables) >= DENSITY_REJECT_MIN_VARIABLES
+            and len(_static_text(text)) < DENSITY_REJECT_BASE + DENSITY_REJECT_PER_VARIABLE * len(variables)):
+        return TemplateValidationError(
+            "This template has too many variables for its length. Reduce the number of "
+            "variables or increase the message length.",
+            subcode=2388293,
+        )
     example = body.get("example")
     if not isinstance(example, dict):
         return TemplateValidationError("BODY parameters require an example.", subcode=2388043)

@@ -7,6 +7,65 @@ const state = { config:{}, apps:[], businesses:[], users:[], messages:[], webhoo
 let guideLanguage = 'curl';
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+/* Every customer gets one of the twelve ghost portraits, chosen from the
+   number so it is the same in every tab and across reloads. The initials stay
+   underneath as the fallback if the image cannot load. */
+const AVATAR_COUNT = 12;
+function avatarSrc(wa){
+  let hash = 0;
+  for(const ch of String(wa || '')) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
+  return `/static/assets/avatars/ghost-${String(hash % AVATAR_COUNT + 1).padStart(2, '0')}.webp`;
+}
+function avatarImg(wa){
+  return `<img class="g-avatar-img" src="${avatarSrc(wa)}" alt="" width="40" height="40" loading="lazy" decoding="async" onerror="this.remove()">`;
+}
+
+
+/* An empty state with its illustration. The text stays the content; the art is
+   decoration (alt="") and simply disappears if the file is missing. */
+function emptyState(art, text){
+  const base = '/static/assets/empty/' + art;
+  return `<div class="empty has-art"><img class="empty-art" src="${base}.webp" srcset="${base}@2x.webp 2x"
+    width="200" height="150" alt="" loading="lazy" decoding="async" onerror="this.remove()"><div>${text}</div></div>`;
+}
+
+const STATUS_ART = {APPROVED:'approved', PENDING:'pending', IN_APPEAL:'pending', REJECTED:'rejected',
+                    PAUSED:'paused', DISABLED:'paused'};
+function statusArt(status){
+  const art = STATUS_ART[String(status||'').toUpperCase()];
+  return art ? `<img class="status-art" src="/static/assets/status/${art}.webp" width="16" height="16" alt="" onerror="this.remove()">` : '';
+}
+
+/* Every template of one business, following Meta-style paging. Reading only
+   the first response showed 25 templates however many existed. */
+async function fetchAllTemplates(wabaId){
+  const out = [];
+  let after = '';
+  for(let guard = 0; guard < 200; guard++){
+    const d = await req(`/v25.0/${wabaId}/message_templates?limit=500${after ? '&after='+encodeURIComponent(after) : ''}`,
+                        {headers:{Authorization:'Bearer '+state.config.access_token}});
+    out.push(...(d.data || []));
+    after = d.paging?.next ? d.paging?.cursors?.after : '';
+    if(!after) break;
+  }
+  return out;
+}
+
+/* Peak moments: shown once per browser, at the two points where an
+   integration visibly starts working. Never repeated, never blocking. */
+function peakOnce(key, art, title, text){
+  try{ if(localStorage.getItem('ghost-peak-'+key)) return; localStorage.setItem('ghost-peak-'+key, '1'); }catch{ return; }
+  const card = document.createElement('div');
+  card.className = 'peak-card';
+  card.setAttribute('role', 'status');
+  card.innerHTML = `<img src="/static/assets/peak/${art}.webp" srcset="/static/assets/peak/${art}@2x.webp 2x" width="88" height="88" alt="" onerror="this.remove()">
+    <div><b>${esc(title)}</b><span>${esc(text)}</span></div><button type="button" aria-label="Dismiss">×</button>`;
+  card.querySelector('button').addEventListener('click', ()=>card.remove());
+  document.body.appendChild(card);
+  requestAnimationFrame(()=>card.classList.add('show'));
+  setTimeout(()=>{ card.classList.remove('show'); setTimeout(()=>card.remove(), 400); }, 7000);
+}
 const initials = s => (s||'?').trim().slice(0,2).toUpperCase();
 
 async function req(url, options={}) {
@@ -93,9 +152,11 @@ async function loadAll(){
     // /console took minutes on a sandbox that had been running a while.
     const [apps,biz,users,stats] = await Promise.all([
       req('/_sandbox/apps'), req('/_sandbox/businesses'),
-      req('/_sandbox/phones'), req('/_sandbox/stats').catch(()=>null)
+      req(CONSOLE_ROSTER_URL), req('/_sandbox/stats').catch(()=>null)
     ]);
     state.apps=apps.data; state.businesses=biz.data; state.users=users.data;
+    state.usersMore = !!users.has_more;
+    loadSimUnread();
     state.stats = stats || {};
 
     $('#base-small').textContent = state.config.base_url.replace(/^https?:\/\//,'');
@@ -131,6 +192,8 @@ async function loadWebhookStats(){
     }
     const set = (id, value) => { const el=$(id); if(el) el.textContent = value; };
     set('#wh-total', d.total); set('#wh-delivered', d.delivered);
+    if(d.delivered > 0) peakOnce('first-delivery', 'first-delivery', 'First webhook delivered',
+      'Your endpoint answered with a 2xx. Every delivery is logged under Webhooks.');
     set('#wh-failed', d.failed); set('#wh-unrouted', d.unrouted);
     renderNotifications();
   }catch{ /* the page still works without the counters */ }
@@ -145,7 +208,8 @@ function renderMetrics(){
   const messages = state.stats?.messages ?? state.messages.length;
   if($('#m-apps')) $('#m-apps').textContent = state.apps.length;
   if($('#m-numbers')) $('#m-numbers').textContent = numbers;
-  if($('#m-users')) $('#m-users').textContent = state.users.length;
+  const customers = state.stats?.customers ?? state.users.length;
+  if($('#m-users')) $('#m-users').textContent = Number(customers).toLocaleString();
   if($('#m-messages')) $('#m-messages').textContent = messages.toLocaleString();
 
   setTask('task-number', numbers>0); setTask('s-number', numbers>0);
@@ -225,17 +289,19 @@ function renderUsers(){
       || lastSeenFor(b.wa_id)-lastSeenFor(a.wa_id)
       || String(a.display_name||'').localeCompare(String(b.display_name||'')));
   const counter = $('#user-count');
-  if(counter) counter.textContent = q ? `${shown.length} of ${all.length}` : `${all.length}`;
+  const total = state.stats?.customers ?? all.length;
+  if(counter) counter.textContent = q ? `${shown.length} of ${all.length}`
+    : (state.usersMore ? `${all.length} most recent of ${Number(total).toLocaleString()}` : `${all.length}`);
   const filterWrap = $('#user-filter-wrap');
   // The list is unbounded once autocreate is on, so only offer search when it helps.
   if(filterWrap) filterWrap.hidden = all.length < 8;
 
   if(!all.length){
-    $('#user-list').innerHTML = '<div class="empty">No test customers yet. Send a message to any number and it appears here.</div>';
+    $('#user-list').innerHTML = emptyState('no-customers', 'No test customers yet. Send a message to any number and it appears here.');
     return;
   }
   if(!shown.length){
-    $('#user-list').innerHTML = `<div class="empty">No customers match "${esc(q)}".</div>`;
+    $('#user-list').innerHTML = emptyState('no-results', `No customers match "${esc(q)}".`);
     return;
   }
   $('#user-list').innerHTML = shown.map(u=>{
@@ -246,7 +312,7 @@ function renderUsers(){
       <button class="user-star ${u.starred?'on':''}" data-star-wa="${esc(u.wa_id)}" aria-pressed="${!!u.starred}"
               title="${u.starred?'Remove '+name+' from favourites':'Add '+name+' to favourites'}"
               aria-label="${u.starred?'Remove from favourites':'Add to favourites'}"><svg class="ico"><use href="#i-star"/></svg></button>
-      <div class="avatar wa" style="background:${esc(color)}1f;color:${esc(color)}">${esc(initials(u.display_name))}</div>
+      <div class="avatar wa g-avatar" style="background:${esc(color)}1f;color:${esc(color)}">${esc(initials(u.display_name))}${avatarImg(u.wa_id)}</div>
       <div class="grow user-id">
         <b title="${name}">${name}${u.auto_created ? '<span class="badge gray" title="Created automatically on first message">auto</span>' : ''}</b>
         <small title="+${esc(u.wa_id)}">+${esc(u.wa_id)}${lastSeenFor(u.wa_id)?' · '+esc(new Date(lastSeenFor(u.wa_id)).toLocaleTimeString()):''}</small>
@@ -312,17 +378,17 @@ async function loadTemplates(){
   for(const b of state.businesses){
     // _wabaId is kept alongside the display name because deleting a template
     // is scoped to its business account: name alone is not unique across WABAs.
-    try{ const d=await req(`/v25.0/${b.id}/message_templates`,{headers:{Authorization:'Bearer '+state.config.access_token}}); all.push(...d.data.map(t=>({...t,_waba:b.name,_wabaId:b.id}))); }catch{}
+    try{ all.push(...(await fetchAllTemplates(b.id)).map(t=>({...t,_waba:b.name,_wabaId:b.id}))); }catch{}
   }
   state.templates=all;
   $('#template-list').innerHTML = all.map(t=>`
     <div class="item"><div class="item-head">
       <div class="avatar"><svg class="ico" style="color:var(--fb-blue)"><use href="#i-template"/></svg></div>
-      <div class="grow"><b>${esc(t.name)} <span class="badge">${esc(t.status)}</span></b>
+      <div class="grow"><b>${esc(t.name)} <span class="badge">${statusArt(t.status)}${esc(t.status)}</span></b>
         <small>${esc(t.language)} · ${esc(t.category)} · ${esc(t._waba)}</small></div>
       <button class="btn danger small" onclick='deleteTemplate(${JSON.stringify(t._wabaId)},${JSON.stringify(t.name)})'>Delete</button></div>
       <div style="margin-top:10px;color:var(--muted)">${esc(t.components?.find(c=>c.type==='BODY')?.text||'')}</div>
-    </div>`).join('') || '<div class="empty">No templates yet.</div>';
+    </div>`).join('') || emptyState('no-templates', 'No templates yet.');
   // Definitions arrive after the first paint now, and a template message can
   // only be rendered to its real body once its definition is known, so any
   // feed already on screen is rebuilt with the names resolved.
@@ -484,8 +550,8 @@ function renderWebhookHistory(page){
         ${w.last_error?`<div class="event-error">${esc(w.last_error)}</div>`:''}${w.last_response_body?`<div class="event-response json-view">${esc(w.last_response_body)}</div>`:''}
       </details></div>`;
   }).join('')|| (state.webhooks.length
-    ? '<div class="empty">No webhook history matches these filters.</div>'
-    : '<div class="empty">No webhook events yet. Send or receive a message to generate one.</div>');
+    ? emptyState('no-results', 'No webhook history matches these filters.')
+    : emptyState('no-webhooks', 'No webhook events yet. Send or receive a message to generate one.'));
 }
 function copyWebhook(id){const item=state.webhooks.find(w=>w.id===id);if(item)copyText(JSON.stringify(item.request_body,null,2));}
 
@@ -563,7 +629,8 @@ async function createTemplate(e){ e.preventDefault();
     if(sampleCount) bodyComponent.example={body_text:[[...Array(sampleCount)].map((_,i)=>`sample_${i+1}`)]};
     await req(`/v25.0/${w}/message_templates`,{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+state.config.access_token},
       body:JSON.stringify({name:$('#tpl-name').value,language:$('#tpl-language').value,category:$('#tpl-category').value,components:[bodyComponent],_sandbox_auto_approve:true})});
-    closeModal('template-modal'); e.target.reset(); toast('Template approved locally'); loadTemplates(); }catch(x){ toast(x.message,true); } }
+    closeModal('template-modal'); e.target.reset(); toast('Template approved locally');
+    peakOnce('template-approved', 'template-approved', 'Template approved', 'It passed the same checks Meta runs. Send it with the Cloud API.'); loadTemplates(); }catch(x){ toast(x.message,true); } }
 async function createWebhook(e){ e.preventDefault();
   const app=state.apps.find(a=>a.id===$('#wh-app').value);
   if(!app){ toast('Select a developer app for webhook signing',true); return; }
@@ -801,8 +868,7 @@ async function gsWarmIndex(){
     const all=[];
     for(const b of state.businesses){
       try{
-        const d=await req(`/v25.0/${b.id}/message_templates`,{headers:{Authorization:'Bearer '+state.config.access_token}});
-        all.push(...d.data.map(t=>({...t,_waba:b.name})));
+        all.push(...(await fetchAllTemplates(b.id)).map(t=>({...t,_waba:b.name})));
       }catch{}
     }
     state.templates=all;
@@ -1023,24 +1089,61 @@ function reloadConsole(){ loadAll().then(()=>gsWarmIndex()); toast('Reloading sa
 
 function unreadFor(wa){ return state.unread.get(wa) || 0; }
 
+/* The console shows the most recently active customers, one bounded page of
+   them: a sandbox with a million customers must not ship a million rows to
+   every console tab. Each row carries its unread and activity totals (kept by
+   triggers server-side), so badges and ordering need no second request. */
+const CONSOLE_ROSTER_URL = '/_sandbox/phones?limit=500';
+
 async function loadSimUnread(){
-  // Derived from message status server-side, so it is correct on a cold load
-  // and cannot drift from the read receipts the sandbox reports to webhooks.
-  try{
-    const d = await req('/_sandbox/unread');
-    const totals = new Map();
-    for(const row of (d.data||[])) totals.set(row.wa_id, (totals.get(row.wa_id)||0) + row.unread);
-    state.unread = totals;
-    // Recency is tracked separately because unread alone cannot order the list:
-    // once everything is read every customer sits at 0 and the order freezes
-    // alphabetically, which is exactly the "not sorting" complaint.
-    const seen = new Map();
-    for(const row of (d.activity||[])){
-      const at = new Date(row.last_at).getTime();
-      if(at > (seen.get(row.wa_id)||0)) seen.set(row.wa_id, at);
+  const totals = new Map(), seen = new Map();
+  for(const u of (state.users||[])){
+    totals.set(u.wa_id, u.unread_total || 0);
+    // Recency is tracked separately because unread alone cannot order the
+    // list: once everything is read every customer sits at 0.
+    if(u.last_activity_at) seen.set(u.wa_id, new Date(u.last_activity_at).getTime());
+  }
+  state.unread = totals;
+  state.lastSeen = seen;
+}
+
+/* Many events a second must not mean many roster downloads: they coalesce
+   into one refresh of the page. */
+/* Run fn now if it has not run recently, otherwise once more at the end of
+   the window: the first event updates the screen at once, and a burst of a
+   thousand costs a couple of requests rather than a thousand. */
+function throttled(fn, ms){
+  let last = 0, timer = null, running = false, again = false;
+  const run = async ()=>{
+    if(running){ again = true; return; }
+    running = true; last = Date.now();
+    try{ await fn(); }finally{
+      running = false;
+      if(again){ again = false; schedule(); }
     }
-    state.lastSeen = seen;
-  }catch{ /* keep the previous counts rather than blanking every badge */ }
+  };
+  const schedule = ()=>{
+    if(timer) return;
+    const wait = Math.max(0, last + ms - Date.now());
+    timer = setTimeout(()=>{ timer = null; run(); }, wait);
+  };
+  return schedule;
+}
+const scheduleConsoleRoster = throttled(async ()=>{
+  try{
+    const [users, stats] = await Promise.all([req(CONSOLE_ROSTER_URL), req('/_sandbox/stats').catch(()=>null)]);
+    state.users = users.data;
+    state.usersMore = !!users.has_more;
+    if(stats) state.stats = stats;
+  }catch{ return; }
+  await loadSimUnread();
+  renderUsers();
+  renderMetrics();
+}, 400);
+
+const reloadWebhooksSoon = throttled(()=>loadWebhooks(), 500);
+function scheduleWebhookReload(){
+  if(state.page === 'webhooks') reloadWebhooksSoon();
 }
 
 function lastSeenFor(wa){ return state.lastSeen.get(wa) || 0; }
@@ -1216,7 +1319,7 @@ function renderNotifications(){
   if(!items.length){
     list.innerHTML = stats && stats.total
       ? '<div class="empty">Loading recent deliveries…</div>'
-      : '<div class="empty">No webhook events yet. Send a message to generate one.</div>';
+      : emptyState('no-webhooks', 'No webhook events yet. Send a message to generate one.');
     return;
   }
   list.innerHTML = items.map(w=>{
@@ -1243,7 +1346,7 @@ function renderDashNumbers(){
   const query = (state.dashFilter||'').trim().toLowerCase();
   const all = state.users || [];
   if(!all.length){
-    box.innerHTML = '<div class="empty">No test numbers yet. Add one, or message any number and it is created automatically.</div>';
+    box.innerHTML = emptyState('no-customers', 'No test numbers yet. Add one, or message any number and it is created automatically.');
     return;
   }
   // Same order as the simulator's own roster, so the two never disagree:
@@ -1254,7 +1357,7 @@ function renderDashNumbers(){
     || lastSeenFor(b.wa_id)-lastSeenFor(a.wa_id)
     || String(a.display_name||'').localeCompare(String(b.display_name||'')));
   if(!shown.length){
-    box.innerHTML = `<div class="empty">No number matches "${esc(query)}".</div>`;
+    box.innerHTML = emptyState('no-results', `No number matches "${esc(query)}".`);
     return;
   }
   box.innerHTML = shown.map(u=>{
@@ -1263,7 +1366,7 @@ function renderDashNumbers(){
     return `<div class="dash-number ${u.starred?'starred':''}">
       <button type="button" class="dash-number-open" data-open-wa="${esc(u.wa_id)}"
               title="Open ${esc(u.display_name||u.wa_id)} in the phone simulator">
-        <span class="avatar wa" style="background:${esc(color)}1f;color:${esc(color)}">${esc(initials(u.display_name))}</span>
+        <span class="avatar wa g-avatar" style="background:${esc(color)}1f;color:${esc(color)}">${esc(initials(u.display_name))}${avatarImg(u.wa_id)}</span>
         <span class="dash-number-main">
           <span class="dash-number-name">${esc(u.display_name)}${u.auto_created?'<span class="badge gray">auto</span>':''}</span>
           <span class="dash-number-id">+${esc(u.wa_id)}</span>
@@ -1405,7 +1508,7 @@ function analyticsNumberTable(customers, total){
       <div class="an-rows">${customers.map(c=>`
         <button type="button" class="an-row" data-open-wa="${esc(c.wa_id)}"
                 title="Open ${esc(c.display_name||c.wa_id)} in the phone simulator">
-          <span class="an-av" style="background:${esc(c.color||'#25D366')}1f;color:${esc(c.color||'#25D366')}">${esc(initials(c.display_name||c.wa_id))}</span>
+          <span class="an-av g-avatar" style="background:${esc(c.color||'#25D366')}1f;color:${esc(c.color||'#25D366')}">${esc(initials(c.display_name||c.wa_id))}${avatarImg(c.wa_id)}</span>
           <span class="an-row-main">
             <span class="an-row-name">${esc(c.display_name||c.wa_id)}${c.starred?'<svg class="ico an-star"><use href="#i-star"/></svg>':''}</span>
             <span class="an-row-sub">+${esc(c.wa_id)} · ${c.businesses||0} sender${c.businesses===1?'':'s'}${c.last_at?' · '+esc(new Date(c.last_at).toLocaleString()):''}</span>
@@ -1615,8 +1718,9 @@ async function handleConsoleEvent(data){
   // is re-fetched rather than patched: one small request that cannot drift.
   if(['phone_created','phone_deleted','phone_updated'].includes(data.event)){
     try{
-      const [users, biz] = await Promise.all([req('/_sandbox/phones'), req('/_sandbox/businesses')]);
+      const [users, biz] = await Promise.all([req(CONSOLE_ROSTER_URL), req('/_sandbox/businesses')]);
       state.users = users.data;
+      state.usersMore = !!users.has_more;
       state.businesses = biz.data;
     }catch{ return; }
     await loadSimUnread();
@@ -1647,19 +1751,30 @@ async function handleConsoleEvent(data){
     });
     // The dashboard message counter and the "Send a message" checklist item
     // both read state.messages, so it has to grow as messages arrive.
+    // Bounded: this used to grow by one entry per message for the life of the tab.
     state.messages.unshift(message);
+    if(state.messages.length > 200) state.messages.length = 200;
     bumpMessageCount(1);
     scheduleAnalyticsRefresh();
-    await loadSimUnread();
-    renderUsers();
+    // The event is applied to the loaded row at once so the list re-sorts
+    // with no round trip; the throttled refresh then reconciles with the
+    // server's trigger-kept totals.
+    const row = (state.users||[]).find(u => u.wa_id === data.wa_id);
+    if(row){
+      row.last_activity_at = message.created_at || new Date().toISOString();
+      if(!inbound) row.unread_total = (row.unread_total||0) + 1;
+      await loadSimUnread();
+      renderUsers();
+    }
     renderMetrics();
+    scheduleConsoleRoster();
     // A webhook is queued for every message, so the history is now stale.
-    if(state.page === 'webhooks') loadWebhooks();
+    scheduleWebhookReload();
     return;
   }
   if(data.event === 'status' || data.event === 'read'){
-    await loadSimUnread();
-    renderUsers();
-    if(state.page === 'webhooks') loadWebhooks();
+    scheduleConsoleRoster();
+    scheduleWebhookReload();
   }
 }
+

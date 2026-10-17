@@ -1,0 +1,152 @@
+/* ===== Ghost brand layer =====
+   Loaded after console.css / phone.css. The page stylesheets own layout; this
+   file owns the look: palette, type and depth. Light only. Tokens follow
+   docs/design/ASSET_PROMPTS.md. The console's legacy token names (--fb-blue,
+   --meta-bg, ...) are remapped here so every existing rule picks up the brand
+   without being rewritten. */
+:root{
+  color-scheme:light;
+  --g-ink:#0E1726; --g-ink-muted:#5B6478; --g-canvas:#F4F6FB; --g-surface:#FFFFFF;
+  --g-surface-2:#F8FAFD; --g-line:#E1E5EE; --g-line-strong:#CDD3E0;
+  --g-spectral:#16B98C; --g-spectral-strong:#0E9C75; --g-spectral-soft:#DDF7EE;
+  --g-aura:#7B6CF6; --g-aura-soft:#EEEBFF;
+  --g-warn:#C98A12; --g-warn-soft:#FFF4DC; --g-danger:#D9475F; --g-danger-soft:#FDE8EC;
+  --g-shadow:0 1px 2px rgba(14,23,38,.05),0 2px 6px rgba(14,23,38,.04);
+  --g-shadow-lift:0 6px 20px rgba(14,23,38,.08),0 2px 6px rgba(14,23,38,.05);
+  --g-ring:0 0 0 3px rgba(22,185,140,.28);
+  --g-font:"Inter","Inter Variable",system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  --g-mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Consolas,monospace;
+
+}
+
+/* console.css's own token names, remapped for the console only: phone.css
+   uses some of the same names (--panel, --ink, --line) for its own palette. */
+body.ghost-console{
+  --fb-blue:var(--g-spectral); --fb-blue-dark:var(--g-spectral-strong);
+  --meta-bg:var(--g-canvas); --panel:var(--g-surface); --ink:var(--g-ink); --muted:var(--g-ink-muted);
+  --line:var(--g-line); --line-soft:var(--g-line); --hover:var(--g-surface-2);
+  --green:var(--g-spectral); --green-dark:var(--g-spectral-strong);
+  --amber:var(--g-warn); --amber-bg:var(--g-warn-soft);
+  --danger:var(--g-danger); --danger-bg:var(--g-danger-soft);
+  --ok:var(--g-spectral-strong); --ok-bg:var(--g-spectral-soft);
+  --radius:12px; --shadow:var(--g-shadow); --shadow-hover:var(--g-shadow-lift);
+  --focus:var(--g-ring); --sidebar:var(--g-surface);
+  --panel-2:var(--g-surface-2); --line-2:var(--g-line-strong); --line-strong:var(--g-line-strong);
+  --accent-soft:var(--g-spectral-soft); --star-bg:var(--g-warn-soft); --star-line:color-mix(in srgb,var(--g-warn) 45%,transparent);
+}
+
+/* ---------- console ---------- */
+body.ghost-console{
+  font-family:var(--g-font);font-feature-settings:"cv11","ss01";
+  background:var(--g-canvas);color:var(--g-ink);
+  -webkit-font-smoothing:antialiased;
+}
+body.ghost-console code,body.ghost-console pre{font-family:var(--g-mono)}
+body.ghost-console a{color:var(--g-spectral-strong)}
+
+.ghost-console .metabar{
+  background:color-mix(in srgb,var(--g-surface) 82%,transparent);
+  backdrop-filter:saturate(1.4) blur(12px);-webkit-backdrop-filter:saturate(1.4) blur(12px);
+  border-bottom:1px solid var(--g-line);box-shadow:none;
+}
+.ghost-console .metabar .logo{gap:10px}
+.ghost-console .metabar .logo .infinity{width:32px;height:32px}
+.ghost-console .metabar .logo .infinity img{width:30px;height:30px;filter:none}
+.ghost-console .metabar .logo b{font-weight:700;letter-spacing:-.3px;color:var(--g-ink)}
+.ghost-console .metabar .logo .tag{
+  font-size:11px;font-weight:600;letter-spacing:.3px;text-transform:uppercase;
+  color:var(--g-aura);background:var(--g-aura-soft);padding:3px 8px;border-radius:999px;
+}
+.ghost-console .metabar nav a{color:var(--g-ink-muted);font-weight:500;border-radius:8px}
+.ghost-console .metabar nav a:hover{background:var(--g-surface-2);color:var(--g-ink)}
+.ghost-console .metabar .search{background:var(--g-surface-2);border:1px solid var(--g-line);border-radius:10px}
+.ghost-console .metabar .search:focus-within{box-shadow:var(--g-ring);border-color:var(--g-spectral)}
+.ghost-console .metabar .avatar-pill{background:var(--g-spectral-soft);color:var(--g-spectral-strong)}
+.ghost-console .menu-pop,.ghost-console .gs-results{background:var(--g-surface);border:1px solid var(--g-line);box-shadow:var(--g-shadow-lift);border-radius:12px}
+.ghost-console .menu-pop button:hover,.ghost-console .gs-item:hover,.ghost-console .gs-item.active{background:var(--g-surface-2)}
+
+.ghost-console .sidebar{background:var(--g-surface);border-right:1px solid var(--g-line)}
+.ghost-console .side-app .wa-mark{background:var(--g-spectral-soft);border-radius:10px}
+.ghost-console .side-app .wa-mark img{width:24px;height:24px}
+.ghost-console .side-section{color:var(--g-ink-muted);letter-spacing:.6px}
+.ghost-console .side-link{color:var(--g-ink-muted);border-radius:9px;font-weight:500}
+.ghost-console .side-link .ico{color:var(--g-ink-muted)}
+.ghost-console .side-link:hover{background:var(--g-surface-2);color:var(--g-ink)}
+.ghost-console .side-link.active{background:var(--g-spectral-soft);color:var(--g-ink);font-weight:600}
+.ghost-console .side-link.active::before{background:var(--g-spectral)}
+.ghost-console .side-link.active .ico{color:var(--g-spectral-strong)}
+.ghost-console .side-foot{background:var(--g-surface-2);border:1px solid var(--g-line)}
+.ghost-console .side-foot .credit a{color:var(--g-spectral-strong)}
+
+.ghost-console .content{max-width:1240px}
+.ghost-console .head h1{font-weight:700;letter-spacing:-.6px}
+.ghost-console .card,.ghost-console .item{
+  background:var(--g-surface);border:1px solid var(--g-line);border-radius:14px;box-shadow:var(--g-shadow);
+}
+.ghost-console .card:hover,.ghost-console .item:hover{box-shadow:var(--g-shadow-lift);border-color:var(--g-line-strong)}
+.ghost-console .stat strong{font-weight:700;letter-spacing:-1px}
+.ghost-console .stat .accent{color:var(--g-spectral-strong)}
+
+.ghost-console .btn{background:var(--g-spectral);color:#06231A;border-radius:10px;font-weight:600;box-shadow:0 1px 0 rgba(255,255,255,.25) inset,0 1px 2px rgba(14,23,38,.12)}
+.ghost-console .btn:hover{background:var(--g-spectral-strong)}
+.ghost-console .btn.secondary{background:var(--g-surface-2);color:var(--g-ink);border:1px solid var(--g-line);box-shadow:none}
+.ghost-console .btn.secondary:hover{background:var(--g-line)}
+.ghost-console .btn.ghost{background:transparent;color:var(--g-spectral-strong);box-shadow:none}
+.ghost-console .btn.danger{background:var(--g-danger);color:#fff}
+.ghost-console .btn.wa{background:var(--g-spectral-soft);color:var(--g-ink);border:1px solid color-mix(in srgb,var(--g-spectral) 45%,transparent);box-shadow:none}
+.ghost-console .btn.wa:hover{background:color-mix(in srgb,var(--g-spectral) 22%,var(--g-surface))}
+
+.ghost-console .field{background:var(--g-surface);border:1px solid var(--g-line);border-radius:10px;color:var(--g-ink)}
+.ghost-console .field:focus{border-color:var(--g-spectral);box-shadow:var(--g-ring)}
+.ghost-console .badge.blue{background:var(--g-aura-soft);color:var(--g-aura)}
+.ghost-console .badge.gray{background:var(--g-surface-2);color:var(--g-ink-muted)}
+.ghost-console .empty{background:var(--g-surface);border:1px dashed var(--g-line-strong);border-radius:14px}
+.ghost-console .modal{background:var(--g-surface);border:1px solid var(--g-line);border-radius:16px}
+.ghost-console .toast{background:var(--g-ink);color:var(--g-canvas);border-radius:12px}
+.ghost-console .toast.bad{background:var(--g-danger);color:#fff}
+
+/* ---------- phone simulator chrome ----------
+   The chat surface stays deliberately close to the real client so developers
+   see roughly what a customer sees. Only the Ghost-owned chrome is branded. */
+body.ghost-phone{font-family:var(--g-font);-webkit-font-smoothing:antialiased}
+.ghost-phone .inbox{background:#0B111C}
+.ghost-phone .mobiles-more{padding:10px;text-align:center;font-size:12px;color:#98A2B8}
+.ghost-phone .inbox-foot{color:#98A2B8}
+
+/* ---------- avatars: always round, portrait over initials ---------- */
+.g-avatar{position:relative;overflow:hidden;border-radius:50%!important;flex:0 0 auto}
+.g-avatar-img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;border-radius:50%;display:block}
+.ghost-console .avatar.wa.g-avatar{width:40px;height:40px;display:grid;place-items:center;font-weight:700}
+.ghost-console .an-av.g-avatar{width:30px;height:30px}
+
+.ghost-phone .biz-avatar{position:relative;color:#fff;font-weight:700;letter-spacing:.3px;
+  text-shadow:0 1px 2px rgba(0,0,0,.18);box-shadow:inset 0 0 0 1px rgba(255,255,255,.25),0 1px 3px rgba(14,23,38,.15)}
+.ghost-phone .biz-avatar::after{content:"";position:absolute;right:-1px;bottom:-1px;width:14px;height:14px;border-radius:50%;
+  border:2px solid #fff;background:#16B98C url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12l5 5L20 7'/%3E%3C/svg%3E") center/9px no-repeat}
+.ghost-phone .convo-head .biz-avatar::after{width:12px;height:12px;background-size:8px}
+
+/* ---------- illustrations ---------- */
+.empty.has-art{display:flex;flex-direction:column;align-items:center;gap:6px;padding:28px 24px}
+.empty-art{display:block;width:200px;height:auto;max-width:70%;margin:0 auto 6px}
+.ghost-phone .empty-msg .empty-art{width:180px;opacity:.95}
+.status-art{width:14px;height:14px;vertical-align:-2px;margin-right:4px}
+
+.peak-card{position:fixed;right:24px;bottom:24px;z-index:90;display:flex;align-items:center;gap:14px;
+  max-width:380px;padding:14px 40px 14px 14px;border-radius:16px;background:var(--g-surface);color:var(--g-ink);
+  border:1px solid var(--g-line);box-shadow:var(--g-shadow-lift);
+  opacity:0;transform:translateY(12px);transition:opacity .3s ease,transform .3s ease}
+.peak-card.show{opacity:1;transform:none}
+.peak-card img{flex:0 0 auto}
+.peak-card b{display:block;font-size:15px}
+.peak-card span{display:block;color:var(--g-ink-muted);font-size:13px;margin-top:2px}
+.peak-card button{position:absolute;top:8px;right:10px;border:0;background:none;color:var(--g-ink-muted);font-size:18px;cursor:pointer}
+
+/* Chat wallpaper: tiled doodles at low strength behind the transcript. The
+   negative z-index keeps it under every child without repositioning them. */
+.ghost-phone .convo{position:relative;isolation:isolate;background-image:none}
+.ghost-phone .convo::before{content:"";position:absolute;inset:0;z-index:-1;pointer-events:none;
+  background:url("/static/assets/texture/chat-wallpaper-light.webp") repeat;background-size:420px;opacity:.045}
+
+@media (prefers-reduced-motion: reduce){
+  .ghost-console *,.ghost-phone *{transition:none!important;animation:none!important}
+}

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import secrets
 import shutil
@@ -24,12 +25,35 @@ from .db import Store
 from .identity import generated_color, generated_name
 from .engine import Engine, location_error, normalize_phone
 from .errors import graph_error
-from .template_validation import validate_template
+from .template_validation import template_warnings, validate_template
 from .web_console import asset, WEB_DIR
 
 
 def rows(items: list[Any]) -> list[dict[str, Any]]:
     return [dict(item) for item in items]
+
+
+#: Display names Meta uses in its duplicate-language error.
+LANGUAGE_NAMES = {
+    "en_US": "English (US)", "en_GB": "English (UK)", "en": "English", "es": "Spanish",
+    "es_ES": "Spanish (SPA)", "es_MX": "Spanish (MEX)", "es_AR": "Spanish (ARG)", "fr": "French",
+    "it": "Italian", "de": "German", "nl": "Dutch", "pt_BR": "Portuguese (BR)",
+    "pt_PT": "Portuguese (POR)", "hi": "Hindi", "ar": "Arabic",
+}
+
+
+def _encode_cursor(offset: int) -> str:
+    return base64.urlsafe_b64encode(f"offset:{offset}".encode()).decode().rstrip("=")
+
+
+def _decode_cursor(cursor: str | None) -> int:
+    if not cursor:
+        return 0
+    try:
+        raw = base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)).decode()
+        return max(0, int(raw.removeprefix("offset:")))
+    except (ValueError, UnicodeDecodeError):
+        return 0
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -217,6 +241,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/_sandbox/reset")
     def reset() -> dict[str, bool]:
+        store.close_all()
         for suffix in ("", "-wal", "-shm"):
             Path(str(settings.database_path) + suffix).unlink(missing_ok=True)
         if settings.media_dir.exists():
@@ -292,18 +317,64 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "phone_numbers": count("phone_numbers"),
             "customers": count("simulated_users"),
             "conversations": count("conversations"),
-            "messages": count("messages"),
+            # Summed from the per-conversation counters: COUNT(*) over messages
+            # is a full index walk that grows with every message ever sent.
+            "messages": (store.one("SELECT COALESCE(SUM(message_count),0) AS total FROM conversations") or {"total": 0})["total"],
             "templates": count("templates"),
             "webhooks": count("webhook_deliveries"),
             "media": count("media"),
         }
 
     @app.get("/_sandbox/phones")
-    def sandbox_phones() -> dict[str, Any]:
-        return {"data": rows(store.all("SELECT * FROM simulated_users ORDER BY created_at"))}
+    def sandbox_phones(
+        limit: int | None = Query(None, ge=1, le=500, description="Page size. Omit for every customer (legacy)."),
+        after: str | None = Query(None, description="Cursor from next_after."),
+        q: str | None = Query(None, description="Match on name or number."),
+    ) -> dict[str, Any]:
+        """Test customers, favourites first and then most recently active.
+
+        With ``limit`` this pages off idx_users_roster with a keyset cursor, so
+        the first screen of a million-customer sandbox costs the same as the
+        first screen of a ten-customer one. Each row carries its unread and
+        message totals, which the inbox used to download for everyone on every
+        incoming message.
+        """
+        if limit is None and not q:
+            return {"data": rows(store.all("SELECT * FROM simulated_users ORDER BY created_at"))}
+        clauses: list[str] = []
+        values: list[Any] = []
+        if q and q.strip():
+            needle = f"%{q.strip().lower()}%"
+            digits = "".join(ch for ch in q if ch.isdigit())
+            clauses.append("(lower(display_name) LIKE ?" + (" OR wa_id LIKE ?" if digits else "") + ")")
+            values.append(needle)
+            if digits:
+                values.append(f"%{digits}%")
+        if after:
+            try:
+                starred, active, wa = json.loads(base64.urlsafe_b64decode(after + "=" * (-len(after) % 4)))
+            except (ValueError, TypeError):
+                return JSONResponse({"error": "after is not a valid cursor"}, status_code=400)
+            clauses.append("(starred < ? OR (starred = ? AND (last_activity_at < ? OR (last_activity_at = ? AND wa_id > ?))))")
+            values += [starred, starred, active, active, wa]
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        page = limit or 100
+        data = rows(store.all(
+            "SELECT * FROM simulated_users" + where +
+            " ORDER BY starred DESC, last_activity_at DESC, wa_id LIMIT ?",
+            (*values, page + 1),
+        ))
+        more = len(data) > page
+        data = data[:page]
+        cursor = None
+        if more and data:
+            last = data[-1]
+            cursor = base64.urlsafe_b64encode(json.dumps(
+                [last["starred"], last["last_activity_at"], last["wa_id"]]).encode()).decode().rstrip("=")
+        return {"data": data, "has_more": more, "next_after": cursor}
 
     @app.get("/_sandbox/unread")
-    def sandbox_unread() -> dict[str, Any]:
+    def sandbox_unread(wa_id: str | None = None) -> dict[str, Any]:
         """Unread counts per simulated customer, per business number.
 
         Unread is derived from message status rather than tracked separately:
@@ -313,18 +384,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         so a badge here can never disagree with a read receipt, and it survives
         a page reload for free.
         """
+        # Read from the counters the message triggers maintain (see db.py):
+        # this used to GROUP BY every message ever stored, 2.3 s at 2M.
+        # wa_id narrows it to one customer's chats, which is all a phone tab
+        # needs; without it this is every conversation in the sandbox.
+        only = " AND user_wa_id=?" if wa_id else ""
+        values = (normalize_phone(wa_id),) if wa_id else ()
         result = store.all(
-            "SELECT c.user_wa_id AS wa_id, c.phone_number_id AS phone_number_id,"
-            " COUNT(*) AS unread, MAX(m.created_at) AS last_at"
-            " FROM messages m JOIN conversations c ON c.id=m.conversation_id"
-            " WHERE m.direction='outbound' AND m.status IN ('accepted','sent','delivered')"
-            " GROUP BY c.user_wa_id, c.phone_number_id"
+            "SELECT user_wa_id AS wa_id, phone_number_id, unread_count AS unread, last_message_at AS last_at"
+            " FROM conversations WHERE unread_count > 0" + only, values,
         )
         activity = store.all(
-            "SELECT c.user_wa_id AS wa_id, c.phone_number_id AS phone_number_id,"
-            " MAX(m.created_at) AS last_at, COUNT(*) AS total"
-            " FROM messages m JOIN conversations c ON c.id=m.conversation_id"
-            " GROUP BY c.user_wa_id, c.phone_number_id"
+            "SELECT user_wa_id AS wa_id, phone_number_id, last_message_at AS last_at, message_count AS total"
+            " FROM conversations WHERE message_count > 0" + only, values,
         )
         # Activity covers read messages too, so the chat list can order by most
         # recent regardless of whether anything is still unread.
@@ -335,13 +407,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         wa_id = normalize_phone(str(body.get("wa_id", "")))
         if not wa_id:
             return JSONResponse({"error": "wa_id is required"}, status_code=400)
-        # INSERT OR REPLACE rewrites the whole row, so an existing favourite has
-        # to be carried over explicitly or re-adding a number silently unstars it.
+        # An upsert, not INSERT OR REPLACE: replacing deletes the row, which
+        # would zero the trigger-kept unread/message totals and unstar a
+        # favourite whenever an existing number is re-added.
         existing = engine.user(wa_id)
         was_starred = bool(existing["starred"]) if existing and "starred" in existing.keys() else False
         store.execute(
-            "INSERT OR REPLACE INTO simulated_users(wa_id,display_name,online,blocked,created_at,color,auto_created,starred)"
-            " VALUES(?,?,?,?,?,?,?,?)",
+            "INSERT INTO simulated_users(wa_id,display_name,online,blocked,created_at,color,auto_created,starred)"
+            " VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(wa_id) DO UPDATE SET display_name=excluded.display_name,"
+            " online=excluded.online, blocked=excluded.blocked, color=excluded.color,"
+            " auto_created=excluded.auto_created, starred=excluded.starred",
             (
                 wa_id,
                 body.get("display_name") or generated_name(wa_id),
@@ -356,6 +431,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         created = dict(engine.user(wa_id))
         engine._announce({"event": "phone_created", "wa_id": wa_id, "user": created})
         return created
+
+    @app.get("/_sandbox/phones/{wa_id}")
+    def sandbox_phone_get(wa_id: str):
+        # A phone tab acts as one customer, who may not be on the first roster
+        # page once the sandbox holds thousands of them.
+        user = engine.user(wa_id)
+        if not user:
+            return JSONResponse({"error": "phone not found"}, status_code=404)
+        return dict(user)
 
     @app.delete("/_sandbox/phones/{wa_id}")
     def sandbox_phone_delete(wa_id: str):
@@ -451,61 +535,64 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         hundred messages or a million.
         """
         shift = f"{tz_offset} minutes"
+        # Everything below reads the 15-minute traffic rollup or the
+        # per-conversation counters, both kept current by triggers in db.py.
+        # Scanning messages directly took 52 s at 2M messages.
         totals = store.one(
-            "SELECT COUNT(*) AS total,"
-            " SUM(CASE WHEN direction='inbound' THEN 1 ELSE 0 END) AS inbound,"
-            " SUM(CASE WHEN direction='outbound' THEN 1 ELSE 0 END) AS outbound,"
-            " MIN(created_at) AS first_at, MAX(created_at) AS last_at FROM messages"
+            "SELECT COALESCE(SUM(total),0) AS total,"
+            " COALESCE(SUM(CASE WHEN direction='inbound' THEN total END),0) AS inbound,"
+            " COALESCE(SUM(CASE WHEN direction='outbound' THEN total END),0) AS outbound"
+            " FROM traffic_rollup WHERE total > 0"
+        )
+        bounds = store.one(
+            "SELECT (SELECT created_at FROM messages ORDER BY created_at LIMIT 1) AS first_at,"
+            " (SELECT created_at FROM messages ORDER BY created_at DESC LIMIT 1) AS last_at"
         )
         by_hour = {int(row["hour"]): row["total"] for row in store.all(
-            "SELECT CAST(strftime('%H', created_at, ?) AS INTEGER) AS hour, COUNT(*) AS total"
-            " FROM messages GROUP BY hour", (shift,),
+            "SELECT CAST(strftime('%H', bucket, ?) AS INTEGER) AS hour, SUM(total) AS total"
+            " FROM traffic_rollup WHERE total > 0 GROUP BY hour", (shift,),
         )}
         by_day = rows(store.all(
-            "SELECT date(created_at, ?) AS day, COUNT(*) AS total,"
-            " SUM(CASE WHEN direction='inbound' THEN 1 ELSE 0 END) AS inbound,"
-            " SUM(CASE WHEN direction='outbound' THEN 1 ELSE 0 END) AS outbound"
-            " FROM messages GROUP BY day ORDER BY day", (shift,),
+            "SELECT date(bucket, ?) AS day, SUM(total) AS total,"
+            " SUM(CASE WHEN direction='inbound' THEN total ELSE 0 END) AS inbound,"
+            " SUM(CASE WHEN direction='outbound' THEN total ELSE 0 END) AS outbound"
+            " FROM traffic_rollup WHERE total > 0 GROUP BY day ORDER BY day", (shift,),
         ))
         by_type = {row["message_type"]: row["total"] for row in store.all(
-            "SELECT message_type, COUNT(*) AS total FROM messages GROUP BY message_type ORDER BY total DESC"
+            "SELECT message_type, SUM(total) AS total FROM traffic_rollup WHERE total > 0"
+            " GROUP BY message_type ORDER BY total DESC"
         )}
         # Per customer. LEFT JOIN so a number with no traffic still appears with
         # zeroes rather than vanishing from a list of "all numbers".
         customers = rows(store.all(
             "SELECT u.wa_id, u.display_name, u.color, u.starred, u.auto_created,"
-            " COUNT(m.id) AS total,"
-            " SUM(CASE WHEN m.direction='inbound' THEN 1 ELSE 0 END) AS inbound,"
-            " SUM(CASE WHEN m.direction='outbound' THEN 1 ELSE 0 END) AS outbound,"
-            " MAX(m.created_at) AS last_at,"
-            " COUNT(DISTINCT c.phone_number_id) AS businesses"
+            " COALESCE(SUM(c.message_count),0) AS total,"
+            " COALESCE(SUM(c.inbound_count),0) AS inbound,"
+            " COALESCE(SUM(c.outbound_count),0) AS outbound,"
+            " MAX(c.last_message_at) AS last_at,"
+            " COUNT(DISTINCT CASE WHEN c.message_count > 0 THEN c.phone_number_id END) AS businesses"
             " FROM simulated_users u"
             " LEFT JOIN conversations c ON c.user_wa_id=u.wa_id"
-            " LEFT JOIN messages m ON m.conversation_id=c.id"
             " GROUP BY u.wa_id ORDER BY total DESC, u.display_name LIMIT ?",
             (top,),
         ))
         senders = rows(store.all(
             "SELECT p.id AS phone_number_id, p.verified_name, p.display_phone_number,"
-            " COUNT(m.id) AS total,"
-            " SUM(CASE WHEN m.direction='inbound' THEN 1 ELSE 0 END) AS inbound,"
-            " SUM(CASE WHEN m.direction='outbound' THEN 1 ELSE 0 END) AS outbound,"
-            " COUNT(DISTINCT c.user_wa_id) AS customers, MAX(m.created_at) AS last_at"
+            " COALESCE(SUM(c.message_count),0) AS total,"
+            " COALESCE(SUM(c.inbound_count),0) AS inbound,"
+            " COALESCE(SUM(c.outbound_count),0) AS outbound,"
+            " COUNT(DISTINCT CASE WHEN c.message_count > 0 THEN c.user_wa_id END) AS customers,"
+            " MAX(c.last_message_at) AS last_at"
             " FROM phone_numbers p"
             " LEFT JOIN conversations c ON c.phone_number_id=p.id"
-            " LEFT JOIN messages m ON m.conversation_id=c.id"
             " GROUP BY p.id ORDER BY total DESC"
         ))
         # The busiest individual pairings, which is the "map across numbers":
         # which customer talks to which sender, and how much.
         pairs = rows(store.all(
-            "SELECT c.user_wa_id AS wa_id, c.phone_number_id AS phone_number_id,"
-            " COUNT(m.id) AS total,"
-            " SUM(CASE WHEN m.direction='inbound' THEN 1 ELSE 0 END) AS inbound,"
-            " SUM(CASE WHEN m.direction='outbound' THEN 1 ELSE 0 END) AS outbound,"
-            " MAX(m.created_at) AS last_at"
-            " FROM conversations c LEFT JOIN messages m ON m.conversation_id=c.id"
-            " GROUP BY c.id HAVING total > 0 ORDER BY total DESC LIMIT ?",
+            "SELECT user_wa_id AS wa_id, phone_number_id, message_count AS total,"
+            " inbound_count AS inbound, outbound_count AS outbound, last_message_at AS last_at"
+            " FROM conversations WHERE message_count > 0 ORDER BY message_count DESC LIMIT ?",
             (top,),
         ))
         return {
@@ -513,8 +600,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "total": (totals["total"] if totals else 0) or 0,
             "inbound": (totals["inbound"] if totals else 0) or 0,
             "outbound": (totals["outbound"] if totals else 0) or 0,
-            "first_at": totals["first_at"] if totals else None,
-            "last_at": totals["last_at"] if totals else None,
+            "first_at": bounds["first_at"] if bounds else None,
+            "last_at": bounds["last_at"] if bounds else None,
             "by_hour": [by_hour.get(hour, 0) for hour in range(24)],
             "by_day": by_day,
             "by_type": by_type,
@@ -1254,16 +1341,41 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return FileResponse(row["storage_path"], media_type=row["mime_type"], filename=row["filename"])
 
     @app.get("/{version}/{waba_id}/message_templates")
-    def list_templates(version: str, waba_id: str, name: str | None = None):
+    def list_templates(
+        request: Request,
+        version: str,
+        waba_id: str,
+        name: str | None = None,
+        limit: int = Query(25, ge=1, le=1000),
+        after: str | None = None,
+        fields: str | None = None,
+    ):
+        # Paged like Meta (default 25, cursor in paging.next) so a client that
+        # forgets to follow paging fails here, not only against production.
+        offset = _decode_cursor(after)
         sql = "SELECT * FROM templates WHERE waba_id=?" + (" AND name=?" if name else "")
-        values = (waba_id, name) if name else (waba_id,)
+        sql += " ORDER BY created_at, id LIMIT ? OFFSET ?"
+        values = ((waba_id, name) if name else (waba_id,)) + (limit + 1, offset)
         data = rows(store.all(sql, values))
+        more = len(data) > limit
+        data = data[:limit]
+        wanted = {f.strip() for f in fields.split(",")} if fields else None
         for item in data:
             item["components"] = json.loads(item.pop("components_json"))
             item.pop("waba_id", None)
             item.pop("created_at", None)
             item.pop("updated_at", None)
-        return {"data": data}
+            if wanted:
+                for key in [k for k in item if k not in wanted | {"id"}]:
+                    item.pop(key)
+        body: dict[str, Any] = {"data": data}
+        if data:
+            body["paging"] = {"cursors": {"before": _encode_cursor(offset), "after": _encode_cursor(offset + len(data))}}
+            if more:
+                query = dict(request.query_params)
+                query["after"] = _encode_cursor(offset + len(data))
+                body["paging"]["next"] = str(request.url.replace_query_params(**query))
+        return body
 
     @app.post("/{version}/{waba_id}/message_templates")
     def create_template(version: str, waba_id: str, body: dict[str, Any] = Body(...)):
@@ -1282,8 +1394,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             store.execute("INSERT INTO templates VALUES(?,?,?,?,?,?,?,?,?)", (template_id, waba_id, body["name"], body["language"], body["category"].upper(), status, json.dumps(body["components"]), now, now))
         except Exception:
-            return graph_error(100, "A template with this name and language already exists.")
-        return {"id": template_id, "status": status, "category": body["category"].upper()}
+            language = LANGUAGE_NAMES.get(body["language"], body["language"])
+            return graph_error(
+                100,
+                f"There is already {language} content for this template. You can create a new template and try again.",
+                error_subcode=2388024,
+                user_title="Content in this language already exists",
+            )
+        result: dict[str, Any] = {"id": template_id, "status": status, "category": body["category"].upper()}
+        if warnings := template_warnings(body):
+            result["_sandbox_warnings"] = warnings
+        return result
 
     @app.delete("/{version}/{waba_id}/message_templates")
     def delete_template_by_name(version: str, waba_id: str, name: str = Query(...)):
