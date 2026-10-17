@@ -119,6 +119,12 @@ body.ghost-phone{font-family:var(--g-font);-webkit-font-smoothing:antialiased}
 .ghost-console .avatar.wa.g-avatar{width:40px;height:40px;display:grid;place-items:center;font-weight:700}
 .ghost-console .an-av.g-avatar{width:30px;height:30px}
 
+.ghost-phone .biz-avatar{position:relative;color:#fff;font-weight:700;letter-spacing:.3px;
+  text-shadow:0 1px 2px rgba(0,0,0,.18);box-shadow:inset 0 0 0 1px rgba(255,255,255,.25),0 1px 3px rgba(14,23,38,.15)}
+.ghost-phone .biz-avatar::after{content:"";position:absolute;right:-1px;bottom:-1px;width:14px;height:14px;border-radius:50%;
+  border:2px solid #fff;background:#16B98C url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12l5 5L20 7'/%3E%3C/svg%3E") center/9px no-repeat}
+.ghost-phone .convo-head .biz-avatar::after{width:12px;height:12px;background-size:8px}
+
 /* ---------- illustrations ---------- */
 .empty.has-art{display:flex;flex-direction:column;align-items:center;gap:6px;padding:28px 24px}
 .empty-art{display:block;width:200px;height:auto;max-width:70%;margin:0 auto 6px}

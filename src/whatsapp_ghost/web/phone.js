@@ -28,6 +28,25 @@ function avatarSrc(wa){
   for(const ch of String(wa || '')) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
   return `/static/assets/avatars/ghost-${String(hash % AVATAR_COUNT + 1).padStart(2, '0')}.webp`;
 }
+/* Businesses get a gradient from the brand palette, chosen from their id so a
+   sender looks the same everywhere, with a small verified tick like a real
+   business profile. */
+const BIZ_GRADIENTS = [
+  ['#3DDBB0','#0E9C75'], ['#9D92FF','#6A5AE0'], ['#FFB86B','#E07B39'],
+  ['#F58BA3','#D9475F'], ['#5EC8F2','#2A7FD4'], ['#46546E','#1B2740'],
+];
+function bizAvatarStyle(id){
+  let hash = 0;
+  for(const ch of String(id || '')) hash = (hash * 31 + ch.charCodeAt(0)) >>> 0;
+  const [from, to] = BIZ_GRADIENTS[hash % BIZ_GRADIENTS.length];
+  return `background:linear-gradient(135deg,${from},${to})`;
+}
+function paintBizAvatar(node, phone){
+  if(!node) return;
+  node.textContent = initials(phone?.verified_name);
+  node.setAttribute('style', bizAvatarStyle(phone?.id));
+  node.classList.add('biz-avatar');
+}
 function avatarImg(wa){
   return `<img class="g-avatar-img" src="${avatarSrc(wa)}" alt="" width="40" height="40" loading="lazy" decoding="async" onerror="this.remove()">`;
 }
@@ -424,7 +443,7 @@ function renderChatList(){
     const at = chatLastAt(p.id);
     return `
     <div class="chat-row ${p.id===state.activePhone?'active':''} ${count?'has-unread':''}" onclick="openChat('${esc(p.id)}')">
-      <div class="c-avatar">${esc(initials(p.verified_name))}</div>
+      <div class="c-avatar biz-avatar" style="${bizAvatarStyle(p.id)}">${esc(initials(p.verified_name))}</div>
       <div class="c-main">
         <div class="c-top"><span class="c-name">${esc(p.verified_name)}</span><span class="c-row-meta">${state.pinned.has(p.id)?'<span class="c-pin" title="Pinned">📌</span>':''}<span class="c-time" id="ct-${esc(p.id)}">${at?esc(fmtTime(at)):''}</span></span></div>
         <div class="c-bottom"><div class="c-preview" id="cp-${esc(p.id)}">+${esc(p.display_phone_number)}</div>${count?`<span class="c-unread">${count>99?'99+':count}</span>`:''}</div>
@@ -465,7 +484,7 @@ async function openChat(phoneId){
   $('#convo').classList.remove('hidden');
   $('#app').classList.add('chat-open');
   $('#convo-name').textContent = p?.verified_name || 'Business';
-  $('#convo-avatar').textContent = initials(p?.verified_name);
+  paintBizAvatar($('#convo-avatar'), p);
   $('#convo-status').textContent = p ? '+'+p.display_phone_number : '';
   document.querySelectorAll('.chat-row').forEach(r=>r.classList.remove('active'));
   document.querySelectorAll('.chat-row').forEach(r=>{ if(r.getAttribute('onclick')?.includes(phoneId)) r.classList.add('active'); });
@@ -1895,7 +1914,7 @@ async function refreshMeta(){
     renderChatList();
     if(state.activePhone){
       const p = businessPhones().find(x=>x.id===state.activePhone);
-      if(p){ $('#convo-name').textContent = p.verified_name; $('#convo-avatar').textContent = initials(p.verified_name); $('#convo-status').textContent = '+'+p.display_phone_number; }
+      if(p){ $('#convo-name').textContent = p.verified_name; paintBizAvatar($('#convo-avatar'), p); $('#convo-status').textContent = '+'+p.display_phone_number; }
     }
   }catch{}
 }
