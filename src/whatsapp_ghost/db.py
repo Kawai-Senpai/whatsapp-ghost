@@ -150,6 +150,25 @@ WHEN OLD.status IS NOT NEW.status BEGIN
 END;
 """
 
+# Per-customer totals, rolled up from the conversation counters, so the roster
+# can be paged in "favourites, then most recent" order straight off an index
+# instead of aggregating every conversation for every page.
+USER_TRIGGERS = """
+CREATE TRIGGER IF NOT EXISTS trg_conversations_user_totals
+AFTER UPDATE OF message_count, unread_count, last_message_at ON conversations BEGIN
+  UPDATE simulated_users SET
+    unread_total = unread_total + NEW.unread_count - OLD.unread_count,
+    message_total = message_total + NEW.message_count - OLD.message_count,
+    last_activity_at = CASE
+      WHEN NEW.last_message_at IS NOT NULL AND NEW.last_message_at > last_activity_at THEN NEW.last_message_at
+      WHEN OLD.last_message_at IS NOT NULL AND OLD.last_message_at = last_activity_at
+           AND (NEW.last_message_at IS NULL OR NEW.last_message_at < OLD.last_message_at)
+        THEN COALESCE((SELECT MAX(last_message_at) FROM conversations WHERE user_wa_id = NEW.user_wa_id), '')
+      ELSE last_activity_at END
+  WHERE wa_id = NEW.user_wa_id;
+END;
+"""
+
 _COUNTER_COLUMNS = ("message_count", "inbound_count", "outbound_count", "unread_count")
 
 
@@ -227,8 +246,17 @@ class Store:
         rollup_was_missing = not db.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='traffic_rollup'"
         ).fetchone()
+        user_columns = {row[1] for row in db.execute("PRAGMA table_info(simulated_users)")}
+        for column, ddl in (("unread_total", "INTEGER NOT NULL DEFAULT 0"),
+                            ("message_total", "INTEGER NOT NULL DEFAULT 0"),
+                            ("last_activity_at", "TEXT NOT NULL DEFAULT ''")):
+            if column not in user_columns:
+                db.execute(f"ALTER TABLE simulated_users ADD COLUMN {column} {ddl}")
+                added = True
         db.executescript(COUNTER_TRIGGERS)
+        db.executescript(USER_TRIGGERS)
         db.execute("CREATE INDEX IF NOT EXISTS idx_conversations_activity ON conversations(last_message_at DESC)")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_users_roster ON simulated_users(starred DESC, last_activity_at DESC, wa_id)")
         has_messages = db.execute("SELECT 1 FROM messages LIMIT 1").fetchone()
         # One pass over an existing database the first time it meets the
         # counters; every later write keeps them current through the triggers.
@@ -245,6 +273,15 @@ class Store:
                 "INSERT INTO traffic_rollup(bucket, direction, message_type, total)"
                 f" SELECT {_SLOT.format(t='created_at')} AS bucket, direction, message_type, COUNT(*)"
                 " FROM messages GROUP BY bucket, direction, message_type"
+            )
+        if has_messages and added or rollup_was_missing and has_messages:
+            # The conversation backfill above fired the per-user trigger with
+            # deltas from whatever was there before, so set the totals outright.
+            db.execute(
+                "UPDATE simulated_users SET"
+                " unread_total = COALESCE((SELECT SUM(unread_count) FROM conversations c WHERE c.user_wa_id = wa_id), 0),"
+                " message_total = COALESCE((SELECT SUM(message_count) FROM conversations c WHERE c.user_wa_id = wa_id), 0),"
+                " last_activity_at = COALESCE((SELECT MAX(last_message_at) FROM conversations c WHERE c.user_wa_id = wa_id), '')"
             )
 
     def initialize(self, access_token: str = "local-dev-token", app_secret: str = "local-app-secret") -> None:
@@ -307,7 +344,14 @@ class Store:
 
     def one(self, sql: str, values: tuple[Any, ...] = ()) -> sqlite3.Row | None:
         with self.connect() as db:
-            return db.execute(sql, values).fetchone()
+            # Close the cursor: on a long-lived connection an unfinished
+            # statement keeps its WAL read snapshot open, and every later read
+            # on this thread would see the database as it was at that moment.
+            cursor = db.execute(sql, values)
+            try:
+                return cursor.fetchone()
+            finally:
+                cursor.close()
 
     def all(self, sql: str, values: tuple[Any, ...] = ()) -> list[sqlite3.Row]:
         with self.connect() as db:

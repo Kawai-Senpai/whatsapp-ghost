@@ -86,3 +86,36 @@ def test_existing_database_is_backfilled_once(settings: Settings, client: TestCl
     db.close()
     client.app.state.store.initialize(settings.access_token, settings.app_secret)
     _recount(settings)
+
+
+def test_customer_totals_and_paged_roster(client: TestClient, headers: dict[str, str], settings: Settings) -> None:
+    customers = [f"155500091{i:02d}" for i in range(7)]
+    for index, customer in enumerate(customers):
+        open_window(client, customer)
+        for _ in range(index):
+            client.post("/v25.0/PHONE_LOCAL/messages", headers=headers, json=text_message(to=customer))
+    client.patch(f"/_sandbox/phones/{customers[0]}", json={"starred": True})
+
+    db = sqlite3.connect(settings.database_path)
+    totals = db.execute("SELECT wa_id, unread_total, message_total, last_activity_at FROM simulated_users ORDER BY wa_id").fetchall()
+    truth = db.execute(
+        "SELECT u.wa_id, COALESCE(SUM(c.unread_count),0), COALESCE(SUM(c.message_count),0), COALESCE(MAX(c.last_message_at),'')"
+        " FROM simulated_users u LEFT JOIN conversations c ON c.user_wa_id=u.wa_id GROUP BY u.wa_id ORDER BY u.wa_id"
+    ).fetchall()
+    db.close()
+    assert totals == truth
+
+    seen, cursor = [], None
+    while True:
+        page = client.get("/_sandbox/phones", params={"limit": 3, **({"after": cursor} if cursor else {})}).json()
+        seen += [row["wa_id"] for row in page["data"]]
+        if not page["has_more"]:
+            break
+        cursor = page["next_after"]
+    everyone = [row["wa_id"] for row in client.get("/_sandbox/phones").json()["data"]]
+    assert sorted(seen) == sorted(everyone) and len(seen) == len(set(seen))
+    assert seen[0] == customers[0]  # favourites first
+    found = client.get("/_sandbox/phones", params={"limit": 10, "q": customers[3][-4:]}).json()["data"]
+    assert [row["wa_id"] for row in found] == [customers[3]]
+    mine = client.get("/_sandbox/unread", params={"wa_id": customers[4]}).json()
+    assert {row["wa_id"] for row in mine["data"]} == {customers[4]}

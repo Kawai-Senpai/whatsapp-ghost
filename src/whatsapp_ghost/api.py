@@ -326,11 +326,55 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         }
 
     @app.get("/_sandbox/phones")
-    def sandbox_phones() -> dict[str, Any]:
-        return {"data": rows(store.all("SELECT * FROM simulated_users ORDER BY created_at"))}
+    def sandbox_phones(
+        limit: int | None = Query(None, ge=1, le=500, description="Page size. Omit for every customer (legacy)."),
+        after: str | None = Query(None, description="Cursor from next_after."),
+        q: str | None = Query(None, description="Match on name or number."),
+    ) -> dict[str, Any]:
+        """Test customers, favourites first and then most recently active.
+
+        With ``limit`` this pages off idx_users_roster with a keyset cursor, so
+        the first screen of a million-customer sandbox costs the same as the
+        first screen of a ten-customer one. Each row carries its unread and
+        message totals, which the inbox used to download for everyone on every
+        incoming message.
+        """
+        if limit is None and not q:
+            return {"data": rows(store.all("SELECT * FROM simulated_users ORDER BY created_at"))}
+        clauses: list[str] = []
+        values: list[Any] = []
+        if q and q.strip():
+            needle = f"%{q.strip().lower()}%"
+            digits = "".join(ch for ch in q if ch.isdigit())
+            clauses.append("(lower(display_name) LIKE ?" + (" OR wa_id LIKE ?" if digits else "") + ")")
+            values.append(needle)
+            if digits:
+                values.append(f"%{digits}%")
+        if after:
+            try:
+                starred, active, wa = json.loads(base64.urlsafe_b64decode(after + "=" * (-len(after) % 4)))
+            except (ValueError, TypeError):
+                return JSONResponse({"error": "after is not a valid cursor"}, status_code=400)
+            clauses.append("(starred < ? OR (starred = ? AND (last_activity_at < ? OR (last_activity_at = ? AND wa_id > ?))))")
+            values += [starred, starred, active, active, wa]
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        page = limit or 100
+        data = rows(store.all(
+            "SELECT * FROM simulated_users" + where +
+            " ORDER BY starred DESC, last_activity_at DESC, wa_id LIMIT ?",
+            (*values, page + 1),
+        ))
+        more = len(data) > page
+        data = data[:page]
+        cursor = None
+        if more and data:
+            last = data[-1]
+            cursor = base64.urlsafe_b64encode(json.dumps(
+                [last["starred"], last["last_activity_at"], last["wa_id"]]).encode()).decode().rstrip("=")
+        return {"data": data, "has_more": more, "next_after": cursor}
 
     @app.get("/_sandbox/unread")
-    def sandbox_unread() -> dict[str, Any]:
+    def sandbox_unread(wa_id: str | None = None) -> dict[str, Any]:
         """Unread counts per simulated customer, per business number.
 
         Unread is derived from message status rather than tracked separately:
@@ -342,13 +386,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         """
         # Read from the counters the message triggers maintain (see db.py):
         # this used to GROUP BY every message ever stored, 2.3 s at 2M.
+        # wa_id narrows it to one customer's chats, which is all a phone tab
+        # needs; without it this is every conversation in the sandbox.
+        only = " AND user_wa_id=?" if wa_id else ""
+        values = (normalize_phone(wa_id),) if wa_id else ()
         result = store.all(
             "SELECT user_wa_id AS wa_id, phone_number_id, unread_count AS unread, last_message_at AS last_at"
-            " FROM conversations WHERE unread_count > 0"
+            " FROM conversations WHERE unread_count > 0" + only, values,
         )
         activity = store.all(
             "SELECT user_wa_id AS wa_id, phone_number_id, last_message_at AS last_at, message_count AS total"
-            " FROM conversations WHERE message_count > 0"
+            " FROM conversations WHERE message_count > 0" + only, values,
         )
         # Activity covers read messages too, so the chat list can order by most
         # recent regardless of whether anything is still unread.
