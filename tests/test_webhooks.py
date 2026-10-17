@@ -350,6 +350,8 @@ def test_timeout_failure_is_reported_with_a_reason_not_an_empty_error(
             raise httpx_module.ReadTimeout("")
 
     monkeypatch.setattr(engine_module.httpx, "AsyncClient", TimingOutClient)
+    # The running app delivers through one shared client made at startup.
+    monkeypatch.setattr(client.app.state.engine, "http", TimingOutClient())
 
     client.post("/_sandbox/phones", json={"wa_id": "15550002001", "display_name": "T"})
     message = client.post("/_sandbox/phones/15550002001/messages", json={

@@ -113,6 +113,30 @@ class Engine:
         # in a threadpool where get_running_loop() raises, so an announcement
         # made from one has to be handed back to this loop explicitly.
         self.loop: Any = None
+        # One client and a cap on deliveries in flight, both set up by the app
+        # lifespan. A client per delivery rebuilt the TLS context (the whole CA
+        # bundle) on the event loop every time, and an uncapped burst of a few
+        # thousand deliveries starved every request and timed out the receiver.
+        self.http: httpx.AsyncClient | None = None
+        self.delivery_slots: asyncio.Semaphore | None = None
+
+    async def start_delivery(self) -> None:
+        self.http = httpx.AsyncClient(timeout=10)
+        self.delivery_slots = asyncio.Semaphore(8)
+
+    async def stop_delivery(self) -> None:
+        client, self.http, self.delivery_slots = self.http, None, None
+        if client:
+            await client.aclose()
+
+    async def _post_webhook(self, url: str, body: bytes, signature: str) -> httpx.Response:
+        headers = {"Content-Type": "application/json", "X-Hub-Signature-256": signature}
+        if self.http is None or self.delivery_slots is None:
+            # Outside the app lifespan (scripts, some tests): no shared client.
+            async with httpx.AsyncClient(timeout=10) as client:
+                return await client.post(url, content=body, headers=headers)
+        async with self.delivery_slots:
+            return await self.http.post(url, content=body, headers=headers)
 
     def phone(self, phone_id: str):
         return self.store.one("SELECT * FROM phone_numbers WHERE id=?", (phone_id,))
@@ -404,9 +428,8 @@ class Engine:
             (attempt_id, delivery_id, attempts, requested_at),
         )
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                response = await client.post(delivery["destination_url"], content=delivery["request_body"], headers={"Content-Type": "application/json", "X-Hub-Signature-256": delivery["signature"]})
-            status = "delivered" if 200 <= response.status_code < 300 else "failed"
+            response = await self._post_webhook(delivery["destination_url"], delivery["request_body"], delivery["signature"])
+            status ="delivered" if 200 <= response.status_code < 300 else "failed"
             completed_at = self.store.now().isoformat()
             self.store.execute("UPDATE webhook_deliveries SET status=?,attempt_count=?,last_status_code=?,last_response_body=?,last_error=?,delivered_at=? WHERE id=?", (status, attempts, response.status_code, response.content, None if status == "delivered" else response.text[:1000], completed_at if status == "delivered" else None, delivery_id))
             self.store.execute(

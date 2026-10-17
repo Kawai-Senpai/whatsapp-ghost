@@ -74,3 +74,32 @@ def test_empty_text_parameter_is_rejected(client: TestClient, headers: dict[str,
     response = _send(client, headers, [HEADER, empty, BUTTON])
     assert response.status_code == 400
     assert response.json()["error"]["code"] == 131008
+
+
+def test_opening_a_big_chat_receipts_only_the_newest_messages(client: TestClient, headers: dict[str, str]) -> None:
+    from whatsapp_ghost.api import READ_RECEIPT_LIMIT
+
+    total = READ_RECEIPT_LIMIT + 15
+    for index in range(total):
+        sent = client.post("/v25.0/PHONE_LOCAL/messages", headers=headers, json={
+            "messaging_product": "whatsapp", "to": "15550002002", "type": "template",
+            "template": {"name": "hello_world", "language": {"code": "en_US"},
+                         "components": [{"type": "body", "parameters": [{"type": "text", "text": "Sam"}]}]},
+        })
+        assert sent.status_code == 200, sent.text
+    read = client.post("/_sandbox/phones/15550002002/read", json={"phone_number_id": "PHONE_LOCAL"})
+    # Delivery is asynchronous, so the newest send may not be "delivered" yet.
+    marked = read.json()["read"]
+    assert marked > READ_RECEIPT_LIMIT
+    messages = client.get("/_sandbox/messages", params={"wa_id": "15550002002", "limit": 100}).json()["data"]
+    assert sum(message["status"] == "read" for message in messages) == marked
+    deliveries = client.get("/_sandbox/webhooks", params={"limit": 500}).json()["data"]
+    receipts = [
+        status
+        for delivery in deliveries
+        for entry in delivery["request_body"].get("entry", [])
+        for change in entry["changes"]
+        for status in change["value"].get("statuses", [])
+        if status["status"] == "read"
+    ]
+    assert len(receipts) == READ_RECEIPT_LIMIT

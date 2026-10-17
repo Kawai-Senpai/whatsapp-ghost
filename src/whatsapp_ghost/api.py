@@ -41,6 +41,9 @@ LANGUAGE_NAMES = {
     "pt_PT": "Portuguese (POR)", "hi": "Hindi", "ar": "Arabic",
 }
 
+# How many of the newest messages get a read receipt webhook when a chat is opened.
+READ_RECEIPT_LIMIT = 20
+
 
 def _encode_cursor(offset: int) -> str:
     return base64.urlsafe_b64encode(f"offset:{offset}".encode()).decode().rstrip("=")
@@ -68,9 +71,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         store.initialize(settings.access_token, settings.app_secret)
         # Sync route handlers run off the loop and cannot find it themselves.
         engine.loop = asyncio.get_running_loop()
+        await engine.start_delivery()
         try:
             yield
         finally:
+            await engine.stop_delivery()
             engine.loop = None
 
     app = FastAPI(
@@ -517,7 +522,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "AND m.status='delivered' ORDER BY m.created_at",
             (normalize_phone(wa_id), phone_number_id),
         )
-        for message in unread:
+        # A real customer opening a chat sees its last screenful, not a
+        # backlog of thousands. Only the newest messages get a read receipt
+        # webhook; older ones are marked read quietly. Receipting every one
+        # sent 10,000 webhooks in minutes on dev and timed out the receiver.
+        receipted, quiet = unread[-READ_RECEIPT_LIMIT:], unread[:-READ_RECEIPT_LIMIT]
+        if quiet:
+            now = store.now().isoformat()
+            ids = [message["id"] for message in quiet]
+            for start in range(0, len(ids), 500):
+                chunk = ids[start:start + 500]
+                store.execute(
+                    f"UPDATE messages SET status='read',updated_at=? WHERE id IN ({','.join('?' * len(chunk))})",
+                    (now, *chunk),
+                )
+        for message in receipted:
             await engine.set_status(message["id"], "read")
         return {"success": True, "read": len(unread)}
 
