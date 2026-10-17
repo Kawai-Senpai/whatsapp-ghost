@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -99,20 +100,152 @@ CREATE INDEX IF NOT EXISTS idx_media_phone ON media(phone_number_id);
 """
 
 
+#: 15-minute UTC slot a message falls in. 15 rather than 60 so a viewer at a
+#: half- or quarter-hour offset (India +5:30, Nepal +5:45) still gets exact
+#: local hour buckets out of the rollup.
+_SLOT = ("strftime('%Y-%m-%dT%H:', {t}) || "
+         "printf('%02d', (CAST(strftime('%M', {t}) AS INTEGER) / 15) * 15)")
+
+# Every dashboard figure used to be a COUNT or GROUP BY over the whole messages
+# table: 52 s for /_sandbox/analytics and 2.3 s for /_sandbox/unread at 2M
+# messages, on every page load. These triggers keep per-conversation counters
+# and a global 15-minute rollup current as messages are written, so reads cost
+# the number of conversations or slots, not the number of messages.
+COUNTER_TRIGGERS = f"""
+CREATE TABLE IF NOT EXISTS traffic_rollup (
+  bucket TEXT NOT NULL, direction TEXT NOT NULL, message_type TEXT NOT NULL,
+  total INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY(bucket, direction, message_type)
+) WITHOUT ROWID;
+CREATE TRIGGER IF NOT EXISTS trg_messages_counters_insert AFTER INSERT ON messages BEGIN
+  UPDATE conversations SET
+    message_count = message_count + 1,
+    inbound_count = inbound_count + (NEW.direction = 'inbound'),
+    outbound_count = outbound_count + (NEW.direction = 'outbound'),
+    unread_count = unread_count + (NEW.direction = 'outbound' AND NEW.status IN ('accepted','sent','delivered')),
+    last_message_at = CASE WHEN last_message_at IS NULL OR NEW.created_at > last_message_at
+                           THEN NEW.created_at ELSE last_message_at END
+  WHERE id = NEW.conversation_id;
+  INSERT INTO traffic_rollup(bucket, direction, message_type, total)
+    VALUES({_SLOT.format(t='NEW.created_at')}, NEW.direction, NEW.message_type, 1)
+    ON CONFLICT(bucket, direction, message_type) DO UPDATE SET total = total + 1;
+END;
+CREATE TRIGGER IF NOT EXISTS trg_messages_counters_delete AFTER DELETE ON messages BEGIN
+  UPDATE conversations SET
+    message_count = message_count - 1,
+    inbound_count = inbound_count - (OLD.direction = 'inbound'),
+    outbound_count = outbound_count - (OLD.direction = 'outbound'),
+    unread_count = unread_count - (OLD.direction = 'outbound' AND OLD.status IN ('accepted','sent','delivered')),
+    last_message_at = (SELECT MAX(created_at) FROM messages WHERE conversation_id = OLD.conversation_id)
+  WHERE id = OLD.conversation_id;
+  UPDATE traffic_rollup SET total = total - 1
+    WHERE bucket = {_SLOT.format(t='OLD.created_at')} AND direction = OLD.direction AND message_type = OLD.message_type;
+END;
+CREATE TRIGGER IF NOT EXISTS trg_messages_counters_status AFTER UPDATE OF status ON messages
+WHEN OLD.status IS NOT NEW.status BEGIN
+  UPDATE conversations SET unread_count = unread_count
+    - (OLD.direction = 'outbound' AND OLD.status IN ('accepted','sent','delivered'))
+    + (NEW.direction = 'outbound' AND NEW.status IN ('accepted','sent','delivered'))
+  WHERE id = NEW.conversation_id;
+END;
+"""
+
+_COUNTER_COLUMNS = ("message_count", "inbound_count", "outbound_count", "unread_count")
+
+
 class Store:
     def __init__(self, path: Path):
         self.path = path
+        # One long-lived connection per thread instead of a new one per query:
+        # opening SQLite, re-reading the schema and re-applying pragmas on every
+        # call was a fixed cost on every request. The generation lets reset()
+        # retire every connection at once before it deletes the files.
+        self._local = threading.local()
+        self._lock = threading.Lock()
+        self._generation = 0
+        self._connections: list[sqlite3.Connection] = []
+
+    def _open(self) -> sqlite3.Connection:
+        connection = sqlite3.connect(self.path, timeout=10, check_same_thread=False)
+        connection.row_factory = sqlite3.Row
+        for pragma in (
+            "PRAGMA foreign_keys=ON",
+            "PRAGMA synchronous=NORMAL",   # safe under WAL; one fsync per checkpoint
+            "PRAGMA temp_store=MEMORY",
+            "PRAGMA cache_size=-65536",    # 64 MB page cache per connection
+            "PRAGMA mmap_size=268435456",  # 256 MB memory-mapped reads
+            "PRAGMA busy_timeout=10000",
+        ):
+            connection.execute(pragma)
+        with self._lock:
+            self._connections.append(connection)
+        return connection
+
+    def close_all(self) -> None:
+        """Close every connection so the database files can be deleted."""
+        with self._lock:
+            self._generation += 1
+            connections, self._connections = self._connections, []
+        for connection in connections:
+            try:
+                connection.close()
+            except sqlite3.Error:
+                pass
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
-        connection = sqlite3.connect(self.path, timeout=10)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys=ON")
+        local = self._local
+        if getattr(local, "generation", None) != self._generation or getattr(local, "connection", None) is None:
+            local.connection = self._open()
+            local.generation = self._generation
+            local.depth = 0
+        connection = local.connection
+        local.depth += 1
         try:
             yield connection
-            connection.commit()
-        finally:
-            connection.close()
+        except BaseException:
+            local.depth -= 1
+            if local.depth == 0:
+                connection.rollback()
+            raise
+        else:
+            local.depth -= 1
+            # Nested use shares the outer transaction and commits with it.
+            if local.depth == 0:
+                connection.commit()
+
+    def _migrate_counters(self, db: sqlite3.Connection) -> None:
+        columns = {row[1] for row in db.execute("PRAGMA table_info(conversations)")}
+        added = False
+        for column in _COUNTER_COLUMNS:
+            if column not in columns:
+                db.execute(f"ALTER TABLE conversations ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0")
+                added = True
+        if "last_message_at" not in columns:
+            db.execute("ALTER TABLE conversations ADD COLUMN last_message_at TEXT")
+            added = True
+        rollup_was_missing = not db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='traffic_rollup'"
+        ).fetchone()
+        db.executescript(COUNTER_TRIGGERS)
+        db.execute("CREATE INDEX IF NOT EXISTS idx_conversations_activity ON conversations(last_message_at DESC)")
+        has_messages = db.execute("SELECT 1 FROM messages LIMIT 1").fetchone()
+        # One pass over an existing database the first time it meets the
+        # counters; every later write keeps them current through the triggers.
+        if has_messages and (added or rollup_was_missing):
+            db.execute(
+                "UPDATE conversations SET (message_count, inbound_count, outbound_count, unread_count, last_message_at) = ("
+                " SELECT COUNT(*), SUM(direction='inbound'), SUM(direction='outbound'),"
+                " SUM(direction='outbound' AND status IN ('accepted','sent','delivered')), MAX(created_at)"
+                " FROM messages m WHERE m.conversation_id = conversations.id)"
+                " WHERE EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = conversations.id)"
+            )
+            db.execute("DELETE FROM traffic_rollup")
+            db.execute(
+                "INSERT INTO traffic_rollup(bucket, direction, message_type, total)"
+                f" SELECT {_SLOT.format(t='created_at')} AS bucket, direction, message_type, COUNT(*)"
+                " FROM messages GROUP BY bucket, direction, message_type"
+            )
 
     def initialize(self, access_token: str = "local-dev-token", app_secret: str = "local-app-secret") -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -151,6 +284,7 @@ class Store:
             # database that predates the column CREATE TABLE IF NOT EXISTS is a
             # no-op, so indexing it up there fails startup with "no such column".
             db.execute("CREATE INDEX IF NOT EXISTS idx_deliveries_message ON webhook_deliveries(message_id)")
+            self._migrate_counters(db)
             now = datetime.now(timezone.utc).isoformat()
             db.execute("INSERT OR IGNORE INTO business_accounts VALUES(?,?,?,?)", ("WABA_LOCAL", "BUSINESS_LOCAL", "Ghost Demo Business", now))
             db.execute(

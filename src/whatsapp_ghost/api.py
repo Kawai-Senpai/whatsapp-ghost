@@ -241,6 +241,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/_sandbox/reset")
     def reset() -> dict[str, bool]:
+        store.close_all()
         for suffix in ("", "-wal", "-shm"):
             Path(str(settings.database_path) + suffix).unlink(missing_ok=True)
         if settings.media_dir.exists():
@@ -316,7 +317,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "phone_numbers": count("phone_numbers"),
             "customers": count("simulated_users"),
             "conversations": count("conversations"),
-            "messages": count("messages"),
+            # Summed from the per-conversation counters: COUNT(*) over messages
+            # is a full index walk that grows with every message ever sent.
+            "messages": (store.one("SELECT COALESCE(SUM(message_count),0) AS total FROM conversations") or {"total": 0})["total"],
             "templates": count("templates"),
             "webhooks": count("webhook_deliveries"),
             "media": count("media"),
@@ -337,18 +340,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         so a badge here can never disagree with a read receipt, and it survives
         a page reload for free.
         """
+        # Read from the counters the message triggers maintain (see db.py):
+        # this used to GROUP BY every message ever stored, 2.3 s at 2M.
         result = store.all(
-            "SELECT c.user_wa_id AS wa_id, c.phone_number_id AS phone_number_id,"
-            " COUNT(*) AS unread, MAX(m.created_at) AS last_at"
-            " FROM messages m JOIN conversations c ON c.id=m.conversation_id"
-            " WHERE m.direction='outbound' AND m.status IN ('accepted','sent','delivered')"
-            " GROUP BY c.user_wa_id, c.phone_number_id"
+            "SELECT user_wa_id AS wa_id, phone_number_id, unread_count AS unread, last_message_at AS last_at"
+            " FROM conversations WHERE unread_count > 0"
         )
         activity = store.all(
-            "SELECT c.user_wa_id AS wa_id, c.phone_number_id AS phone_number_id,"
-            " MAX(m.created_at) AS last_at, COUNT(*) AS total"
-            " FROM messages m JOIN conversations c ON c.id=m.conversation_id"
-            " GROUP BY c.user_wa_id, c.phone_number_id"
+            "SELECT user_wa_id AS wa_id, phone_number_id, last_message_at AS last_at, message_count AS total"
+            " FROM conversations WHERE message_count > 0"
         )
         # Activity covers read messages too, so the chat list can order by most
         # recent regardless of whether anything is still unread.
@@ -475,61 +475,64 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         hundred messages or a million.
         """
         shift = f"{tz_offset} minutes"
+        # Everything below reads the 15-minute traffic rollup or the
+        # per-conversation counters, both kept current by triggers in db.py.
+        # Scanning messages directly took 52 s at 2M messages.
         totals = store.one(
-            "SELECT COUNT(*) AS total,"
-            " SUM(CASE WHEN direction='inbound' THEN 1 ELSE 0 END) AS inbound,"
-            " SUM(CASE WHEN direction='outbound' THEN 1 ELSE 0 END) AS outbound,"
-            " MIN(created_at) AS first_at, MAX(created_at) AS last_at FROM messages"
+            "SELECT COALESCE(SUM(total),0) AS total,"
+            " COALESCE(SUM(CASE WHEN direction='inbound' THEN total END),0) AS inbound,"
+            " COALESCE(SUM(CASE WHEN direction='outbound' THEN total END),0) AS outbound"
+            " FROM traffic_rollup WHERE total > 0"
+        )
+        bounds = store.one(
+            "SELECT (SELECT created_at FROM messages ORDER BY created_at LIMIT 1) AS first_at,"
+            " (SELECT created_at FROM messages ORDER BY created_at DESC LIMIT 1) AS last_at"
         )
         by_hour = {int(row["hour"]): row["total"] for row in store.all(
-            "SELECT CAST(strftime('%H', created_at, ?) AS INTEGER) AS hour, COUNT(*) AS total"
-            " FROM messages GROUP BY hour", (shift,),
+            "SELECT CAST(strftime('%H', bucket, ?) AS INTEGER) AS hour, SUM(total) AS total"
+            " FROM traffic_rollup WHERE total > 0 GROUP BY hour", (shift,),
         )}
         by_day = rows(store.all(
-            "SELECT date(created_at, ?) AS day, COUNT(*) AS total,"
-            " SUM(CASE WHEN direction='inbound' THEN 1 ELSE 0 END) AS inbound,"
-            " SUM(CASE WHEN direction='outbound' THEN 1 ELSE 0 END) AS outbound"
-            " FROM messages GROUP BY day ORDER BY day", (shift,),
+            "SELECT date(bucket, ?) AS day, SUM(total) AS total,"
+            " SUM(CASE WHEN direction='inbound' THEN total ELSE 0 END) AS inbound,"
+            " SUM(CASE WHEN direction='outbound' THEN total ELSE 0 END) AS outbound"
+            " FROM traffic_rollup WHERE total > 0 GROUP BY day ORDER BY day", (shift,),
         ))
         by_type = {row["message_type"]: row["total"] for row in store.all(
-            "SELECT message_type, COUNT(*) AS total FROM messages GROUP BY message_type ORDER BY total DESC"
+            "SELECT message_type, SUM(total) AS total FROM traffic_rollup WHERE total > 0"
+            " GROUP BY message_type ORDER BY total DESC"
         )}
         # Per customer. LEFT JOIN so a number with no traffic still appears with
         # zeroes rather than vanishing from a list of "all numbers".
         customers = rows(store.all(
             "SELECT u.wa_id, u.display_name, u.color, u.starred, u.auto_created,"
-            " COUNT(m.id) AS total,"
-            " SUM(CASE WHEN m.direction='inbound' THEN 1 ELSE 0 END) AS inbound,"
-            " SUM(CASE WHEN m.direction='outbound' THEN 1 ELSE 0 END) AS outbound,"
-            " MAX(m.created_at) AS last_at,"
-            " COUNT(DISTINCT c.phone_number_id) AS businesses"
+            " COALESCE(SUM(c.message_count),0) AS total,"
+            " COALESCE(SUM(c.inbound_count),0) AS inbound,"
+            " COALESCE(SUM(c.outbound_count),0) AS outbound,"
+            " MAX(c.last_message_at) AS last_at,"
+            " COUNT(DISTINCT CASE WHEN c.message_count > 0 THEN c.phone_number_id END) AS businesses"
             " FROM simulated_users u"
             " LEFT JOIN conversations c ON c.user_wa_id=u.wa_id"
-            " LEFT JOIN messages m ON m.conversation_id=c.id"
             " GROUP BY u.wa_id ORDER BY total DESC, u.display_name LIMIT ?",
             (top,),
         ))
         senders = rows(store.all(
             "SELECT p.id AS phone_number_id, p.verified_name, p.display_phone_number,"
-            " COUNT(m.id) AS total,"
-            " SUM(CASE WHEN m.direction='inbound' THEN 1 ELSE 0 END) AS inbound,"
-            " SUM(CASE WHEN m.direction='outbound' THEN 1 ELSE 0 END) AS outbound,"
-            " COUNT(DISTINCT c.user_wa_id) AS customers, MAX(m.created_at) AS last_at"
+            " COALESCE(SUM(c.message_count),0) AS total,"
+            " COALESCE(SUM(c.inbound_count),0) AS inbound,"
+            " COALESCE(SUM(c.outbound_count),0) AS outbound,"
+            " COUNT(DISTINCT CASE WHEN c.message_count > 0 THEN c.user_wa_id END) AS customers,"
+            " MAX(c.last_message_at) AS last_at"
             " FROM phone_numbers p"
             " LEFT JOIN conversations c ON c.phone_number_id=p.id"
-            " LEFT JOIN messages m ON m.conversation_id=c.id"
             " GROUP BY p.id ORDER BY total DESC"
         ))
         # The busiest individual pairings, which is the "map across numbers":
         # which customer talks to which sender, and how much.
         pairs = rows(store.all(
-            "SELECT c.user_wa_id AS wa_id, c.phone_number_id AS phone_number_id,"
-            " COUNT(m.id) AS total,"
-            " SUM(CASE WHEN m.direction='inbound' THEN 1 ELSE 0 END) AS inbound,"
-            " SUM(CASE WHEN m.direction='outbound' THEN 1 ELSE 0 END) AS outbound,"
-            " MAX(m.created_at) AS last_at"
-            " FROM conversations c LEFT JOIN messages m ON m.conversation_id=c.id"
-            " GROUP BY c.id HAVING total > 0 ORDER BY total DESC LIMIT ?",
+            "SELECT user_wa_id AS wa_id, phone_number_id, message_count AS total,"
+            " inbound_count AS inbound, outbound_count AS outbound, last_message_at AS last_at"
+            " FROM conversations WHERE message_count > 0 ORDER BY message_count DESC LIMIT ?",
             (top,),
         ))
         return {
@@ -537,8 +540,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "total": (totals["total"] if totals else 0) or 0,
             "inbound": (totals["inbound"] if totals else 0) or 0,
             "outbound": (totals["outbound"] if totals else 0) or 0,
-            "first_at": totals["first_at"] if totals else None,
-            "last_at": totals["last_at"] if totals else None,
+            "first_at": bounds["first_at"] if bounds else None,
+            "last_at": bounds["last_at"] if bounds else None,
             "by_hour": [by_hour.get(hour, 0) for hour in range(24)],
             "by_day": by_day,
             "by_type": by_type,
