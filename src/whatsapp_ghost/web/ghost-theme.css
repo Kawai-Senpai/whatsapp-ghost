@@ -1,7 +1,6 @@
 /* ===== Ghost brand layer =====
    Loaded after console.css / phone.css. The page stylesheets own layout; this
-   file owns the look: palette, type and depth. Light only. Tokens follow
-   docs/design/ASSET_PROMPTS.md. The console's legacy token names (--fb-blue,
+   file owns the look: palette, type and depth. Light only. The console's legacy token names (--fb-blue,
    --meta-bg, ...) are remapped here so every existing rule picks up the brand
    without being rewritten. */
 :root{
