@@ -7,6 +7,51 @@ const state = { config:{}, apps:[], businesses:[], users:[], messages:[], webhoo
 let guideLanguage = 'curl';
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+/* An empty state with its illustration. The text stays the content; the art is
+   decoration (alt="") and simply disappears if the file is missing. */
+function emptyState(art, text){
+  const base = '/static/assets/empty/' + art;
+  return `<div class="empty has-art"><img class="empty-art" src="${base}.webp" srcset="${base}@2x.webp 2x"
+    width="200" height="150" alt="" loading="lazy" decoding="async" onerror="this.remove()"><div>${text}</div></div>`;
+}
+
+const STATUS_ART = {APPROVED:'approved', PENDING:'pending', IN_APPEAL:'pending', REJECTED:'rejected',
+                    PAUSED:'paused', DISABLED:'paused'};
+function statusArt(status){
+  const art = STATUS_ART[String(status||'').toUpperCase()];
+  return art ? `<img class="status-art" src="/static/assets/status/${art}.webp" width="16" height="16" alt="" onerror="this.remove()">` : '';
+}
+
+/* Every template of one business, following Meta-style paging. Reading only
+   the first response showed 25 templates however many existed. */
+async function fetchAllTemplates(wabaId){
+  const out = [];
+  let after = '';
+  for(let guard = 0; guard < 200; guard++){
+    const d = await req(`/v25.0/${wabaId}/message_templates?limit=500${after ? '&after='+encodeURIComponent(after) : ''}`,
+                        {headers:{Authorization:'Bearer '+state.config.access_token}});
+    out.push(...(d.data || []));
+    after = d.paging?.next ? d.paging?.cursors?.after : '';
+    if(!after) break;
+  }
+  return out;
+}
+
+/* Peak moments: shown once per browser, at the two points where an
+   integration visibly starts working. Never repeated, never blocking. */
+function peakOnce(key, art, title, text){
+  try{ if(localStorage.getItem('ghost-peak-'+key)) return; localStorage.setItem('ghost-peak-'+key, '1'); }catch{ return; }
+  const card = document.createElement('div');
+  card.className = 'peak-card';
+  card.setAttribute('role', 'status');
+  card.innerHTML = `<img src="/static/assets/peak/${art}.webp" srcset="/static/assets/peak/${art}@2x.webp 2x" width="88" height="88" alt="" onerror="this.remove()">
+    <div><b>${esc(title)}</b><span>${esc(text)}</span></div><button type="button" aria-label="Dismiss">×</button>`;
+  card.querySelector('button').addEventListener('click', ()=>card.remove());
+  document.body.appendChild(card);
+  requestAnimationFrame(()=>card.classList.add('show'));
+  setTimeout(()=>{ card.classList.remove('show'); setTimeout(()=>card.remove(), 400); }, 7000);
+}
 const initials = s => (s||'?').trim().slice(0,2).toUpperCase();
 
 async function req(url, options={}) {
@@ -133,6 +178,8 @@ async function loadWebhookStats(){
     }
     const set = (id, value) => { const el=$(id); if(el) el.textContent = value; };
     set('#wh-total', d.total); set('#wh-delivered', d.delivered);
+    if(d.delivered > 0) peakOnce('first-delivery', 'first-delivery', 'First webhook delivered',
+      'Your endpoint answered with a 2xx. Every delivery is logged under Webhooks.');
     set('#wh-failed', d.failed); set('#wh-unrouted', d.unrouted);
     renderNotifications();
   }catch{ /* the page still works without the counters */ }
@@ -236,11 +283,11 @@ function renderUsers(){
   if(filterWrap) filterWrap.hidden = all.length < 8;
 
   if(!all.length){
-    $('#user-list').innerHTML = '<div class="empty">No test customers yet. Send a message to any number and it appears here.</div>';
+    $('#user-list').innerHTML = emptyState('no-customers', 'No test customers yet. Send a message to any number and it appears here.');
     return;
   }
   if(!shown.length){
-    $('#user-list').innerHTML = `<div class="empty">No customers match "${esc(q)}".</div>`;
+    $('#user-list').innerHTML = emptyState('no-results', `No customers match "${esc(q)}".`);
     return;
   }
   $('#user-list').innerHTML = shown.map(u=>{
@@ -317,17 +364,17 @@ async function loadTemplates(){
   for(const b of state.businesses){
     // _wabaId is kept alongside the display name because deleting a template
     // is scoped to its business account: name alone is not unique across WABAs.
-    try{ const d=await req(`/v25.0/${b.id}/message_templates`,{headers:{Authorization:'Bearer '+state.config.access_token}}); all.push(...d.data.map(t=>({...t,_waba:b.name,_wabaId:b.id}))); }catch{}
+    try{ all.push(...(await fetchAllTemplates(b.id)).map(t=>({...t,_waba:b.name,_wabaId:b.id}))); }catch{}
   }
   state.templates=all;
   $('#template-list').innerHTML = all.map(t=>`
     <div class="item"><div class="item-head">
       <div class="avatar"><svg class="ico" style="color:var(--fb-blue)"><use href="#i-template"/></svg></div>
-      <div class="grow"><b>${esc(t.name)} <span class="badge">${esc(t.status)}</span></b>
+      <div class="grow"><b>${esc(t.name)} <span class="badge">${statusArt(t.status)}${esc(t.status)}</span></b>
         <small>${esc(t.language)} · ${esc(t.category)} · ${esc(t._waba)}</small></div>
       <button class="btn danger small" onclick='deleteTemplate(${JSON.stringify(t._wabaId)},${JSON.stringify(t.name)})'>Delete</button></div>
       <div style="margin-top:10px;color:var(--muted)">${esc(t.components?.find(c=>c.type==='BODY')?.text||'')}</div>
-    </div>`).join('') || '<div class="empty">No templates yet.</div>';
+    </div>`).join('') || emptyState('no-templates', 'No templates yet.');
   // Definitions arrive after the first paint now, and a template message can
   // only be rendered to its real body once its definition is known, so any
   // feed already on screen is rebuilt with the names resolved.
@@ -489,8 +536,8 @@ function renderWebhookHistory(page){
         ${w.last_error?`<div class="event-error">${esc(w.last_error)}</div>`:''}${w.last_response_body?`<div class="event-response json-view">${esc(w.last_response_body)}</div>`:''}
       </details></div>`;
   }).join('')|| (state.webhooks.length
-    ? '<div class="empty">No webhook history matches these filters.</div>'
-    : '<div class="empty">No webhook events yet. Send or receive a message to generate one.</div>');
+    ? emptyState('no-results', 'No webhook history matches these filters.')
+    : emptyState('no-webhooks', 'No webhook events yet. Send or receive a message to generate one.'));
 }
 function copyWebhook(id){const item=state.webhooks.find(w=>w.id===id);if(item)copyText(JSON.stringify(item.request_body,null,2));}
 
@@ -568,7 +615,8 @@ async function createTemplate(e){ e.preventDefault();
     if(sampleCount) bodyComponent.example={body_text:[[...Array(sampleCount)].map((_,i)=>`sample_${i+1}`)]};
     await req(`/v25.0/${w}/message_templates`,{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+state.config.access_token},
       body:JSON.stringify({name:$('#tpl-name').value,language:$('#tpl-language').value,category:$('#tpl-category').value,components:[bodyComponent],_sandbox_auto_approve:true})});
-    closeModal('template-modal'); e.target.reset(); toast('Template approved locally'); loadTemplates(); }catch(x){ toast(x.message,true); } }
+    closeModal('template-modal'); e.target.reset(); toast('Template approved locally');
+    peakOnce('template-approved', 'template-approved', 'Template approved', 'It passed the same checks Meta runs. Send it with the Cloud API.'); loadTemplates(); }catch(x){ toast(x.message,true); } }
 async function createWebhook(e){ e.preventDefault();
   const app=state.apps.find(a=>a.id===$('#wh-app').value);
   if(!app){ toast('Select a developer app for webhook signing',true); return; }
@@ -806,8 +854,7 @@ async function gsWarmIndex(){
     const all=[];
     for(const b of state.businesses){
       try{
-        const d=await req(`/v25.0/${b.id}/message_templates`,{headers:{Authorization:'Bearer '+state.config.access_token}});
-        all.push(...d.data.map(t=>({...t,_waba:b.name})));
+        all.push(...(await fetchAllTemplates(b.id)).map(t=>({...t,_waba:b.name})));
       }catch{}
     }
     state.templates=all;
@@ -1258,7 +1305,7 @@ function renderNotifications(){
   if(!items.length){
     list.innerHTML = stats && stats.total
       ? '<div class="empty">Loading recent deliveries…</div>'
-      : '<div class="empty">No webhook events yet. Send a message to generate one.</div>';
+      : emptyState('no-webhooks', 'No webhook events yet. Send a message to generate one.');
     return;
   }
   list.innerHTML = items.map(w=>{
@@ -1285,7 +1332,7 @@ function renderDashNumbers(){
   const query = (state.dashFilter||'').trim().toLowerCase();
   const all = state.users || [];
   if(!all.length){
-    box.innerHTML = '<div class="empty">No test numbers yet. Add one, or message any number and it is created automatically.</div>';
+    box.innerHTML = emptyState('no-customers', 'No test numbers yet. Add one, or message any number and it is created automatically.');
     return;
   }
   // Same order as the simulator's own roster, so the two never disagree:
@@ -1296,7 +1343,7 @@ function renderDashNumbers(){
     || lastSeenFor(b.wa_id)-lastSeenFor(a.wa_id)
     || String(a.display_name||'').localeCompare(String(b.display_name||'')));
   if(!shown.length){
-    box.innerHTML = `<div class="empty">No number matches "${esc(query)}".</div>`;
+    box.innerHTML = emptyState('no-results', `No number matches "${esc(query)}".`);
     return;
   }
   box.innerHTML = shown.map(u=>{

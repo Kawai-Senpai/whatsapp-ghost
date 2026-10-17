@@ -148,6 +148,28 @@ body.ghost-phone{font-family:var(--g-font);-webkit-font-smoothing:antialiased}
 .ghost-phone .mobiles-more{padding:10px;text-align:center;font-size:12px;color:#98A2B8}
 .ghost-phone .inbox-foot{color:#98A2B8}
 
+/* ---------- illustrations ---------- */
+.empty.has-art{display:flex;flex-direction:column;align-items:center;gap:6px;padding:28px 24px}
+.empty-art{display:block;width:200px;height:auto;max-width:70%;margin:0 auto 6px}
+.ghost-phone .empty-msg .empty-art{width:180px;opacity:.95}
+.status-art{width:14px;height:14px;vertical-align:-2px;margin-right:4px}
+
+.peak-card{position:fixed;right:24px;bottom:24px;z-index:90;display:flex;align-items:center;gap:14px;
+  max-width:380px;padding:14px 40px 14px 14px;border-radius:16px;background:var(--g-surface);color:var(--g-ink);
+  border:1px solid var(--g-line);box-shadow:var(--g-shadow-lift);
+  opacity:0;transform:translateY(12px);transition:opacity .3s ease,transform .3s ease}
+.peak-card.show{opacity:1;transform:none}
+.peak-card img{flex:0 0 auto}
+.peak-card b{display:block;font-size:15px}
+.peak-card span{display:block;color:var(--g-ink-muted);font-size:13px;margin-top:2px}
+.peak-card button{position:absolute;top:8px;right:10px;border:0;background:none;color:var(--g-ink-muted);font-size:18px;cursor:pointer}
+
+/* Chat wallpaper: tiled doodles at low strength behind the transcript. The
+   negative z-index keeps it under every child without repositioning them. */
+.ghost-phone .convo{position:relative;isolation:isolate;background-image:none}
+.ghost-phone .convo::before{content:"";position:absolute;inset:0;z-index:-1;pointer-events:none;
+  background:url("/static/assets/texture/chat-wallpaper-light.webp") repeat;background-size:420px;opacity:.045}
+
 @media (prefers-reduced-motion: reduce){
   .ghost-console *,.ghost-phone *{transition:none!important;animation:none!important}
 }

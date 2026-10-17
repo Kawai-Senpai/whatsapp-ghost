@@ -282,18 +282,37 @@ function jsonHtml(value){
 
 /* Template bodies live on the WABA, so they are fetched once per business and
    keyed by name|language for rendering sent template messages. */
+/* Definitions are fetched by name for the templates this chat actually shows.
+   Downloading every template of every business on boot cost a full catalogue
+   (hundreds of definitions) before the first paint, and the list is paged
+   like Meta's, so it silently stopped at the first 25. */
+const templatesRequested = new Set();
 async function loadTemplateDefinitions(){
   const token = state.config.access_token;
   if(!token) return;
-  for(const business of state.businesses){
-    try{
-      const d = await req(`/v25.0/${business.id}/message_templates`, {headers:{Authorization:'Bearer '+token}});
-      for(const tpl of (d.data || [])){
-        state.templates[tpl.name + '|' + tpl.language] = tpl;
-        state.templates[tpl.name] = tpl;
-      }
-    }catch{ /* a business without readable templates just renders the name */ }
+  const names = new Set();
+  for(const message of state.messages.values()){
+    if(!isUnknownTemplate(message)) continue;
+    const name = (message.payload || {}).template?.name;
+    if(name && !templatesRequested.has(name)) names.add(name);
   }
+  if(!names.size) return;
+  const jobs = [];
+  for(const name of names){
+    templatesRequested.add(name);
+    for(const business of state.businesses){
+      jobs.push(req(`/v25.0/${business.id}/message_templates?limit=100&name=${encodeURIComponent(name)}`,
+                    {headers:{Authorization:'Bearer '+token}})
+        .then(d=>{
+          for(const tpl of (d.data || [])){
+            state.templates[tpl.name + '|' + tpl.language] = tpl;
+            state.templates[tpl.name] = tpl;
+          }
+        })
+        .catch(()=>{ /* a business without readable templates just renders the name */ }));
+    }
+  }
+  await Promise.all(jobs);
 }
 
 function isUnknownTemplate(message){
@@ -310,7 +329,6 @@ async function boot(){
     state.config = await req('/_sandbox/config');
     const [biz] = await Promise.all([req('/_sandbox/businesses'), loadRoster({reset:true})]);
     state.businesses = biz.data;
-    await loadTemplateDefinitions();
     if(!state.wa && state.users.length) state.wa = state.users[0].wa_id;
     await loadMe();
     const me = state.me;
@@ -578,7 +596,7 @@ function renderMessages(options){
   const all = [...state.messages.values()]
     .sort((a,b)=> new Date(a.created_at)-new Date(b.created_at) || String(a.id).localeCompare(String(b.id)));
   if(!all.length){
-    box.innerHTML = '<div class="empty-msg">No messages yet.<br>Say hello to open the 24-hour service window.</div>';
+    box.innerHTML = '<div class="empty-msg"><img class="empty-art" src="/static/assets/empty/no-messages.webp" srcset="/static/assets/empty/no-messages@2x.webp 2x" width="200" height="150" alt="" decoding="async" onerror="this.remove()">No messages yet.<br>Say hello to open the 24-hour service window.</div>';
     return;
   }
   // last preview + time on chat row
