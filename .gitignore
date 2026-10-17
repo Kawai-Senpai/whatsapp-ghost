@@ -11,3 +11,4 @@ build/
 whatsapp-ghost.db*
 tmp
 .env
+docs/design/ASSET_PROMPTS.md
