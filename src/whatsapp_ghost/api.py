@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import secrets
 import shutil
@@ -24,12 +25,35 @@ from .db import Store
 from .identity import generated_color, generated_name
 from .engine import Engine, location_error, normalize_phone
 from .errors import graph_error
-from .template_validation import validate_template
+from .template_validation import template_warnings, validate_template
 from .web_console import asset, WEB_DIR
 
 
 def rows(items: list[Any]) -> list[dict[str, Any]]:
     return [dict(item) for item in items]
+
+
+#: Display names Meta uses in its duplicate-language error.
+LANGUAGE_NAMES = {
+    "en_US": "English (US)", "en_GB": "English (UK)", "en": "English", "es": "Spanish",
+    "es_ES": "Spanish (SPA)", "es_MX": "Spanish (MEX)", "es_AR": "Spanish (ARG)", "fr": "French",
+    "it": "Italian", "de": "German", "nl": "Dutch", "pt_BR": "Portuguese (BR)",
+    "pt_PT": "Portuguese (POR)", "hi": "Hindi", "ar": "Arabic",
+}
+
+
+def _encode_cursor(offset: int) -> str:
+    return base64.urlsafe_b64encode(f"offset:{offset}".encode()).decode().rstrip("=")
+
+
+def _decode_cursor(cursor: str | None) -> int:
+    if not cursor:
+        return 0
+    try:
+        raw = base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)).decode()
+        return max(0, int(raw.removeprefix("offset:")))
+    except (ValueError, UnicodeDecodeError):
+        return 0
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -1254,16 +1278,41 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return FileResponse(row["storage_path"], media_type=row["mime_type"], filename=row["filename"])
 
     @app.get("/{version}/{waba_id}/message_templates")
-    def list_templates(version: str, waba_id: str, name: str | None = None):
+    def list_templates(
+        request: Request,
+        version: str,
+        waba_id: str,
+        name: str | None = None,
+        limit: int = Query(25, ge=1, le=1000),
+        after: str | None = None,
+        fields: str | None = None,
+    ):
+        # Paged like Meta (default 25, cursor in paging.next) so a client that
+        # forgets to follow paging fails here, not only against production.
+        offset = _decode_cursor(after)
         sql = "SELECT * FROM templates WHERE waba_id=?" + (" AND name=?" if name else "")
-        values = (waba_id, name) if name else (waba_id,)
+        sql += " ORDER BY created_at, id LIMIT ? OFFSET ?"
+        values = ((waba_id, name) if name else (waba_id,)) + (limit + 1, offset)
         data = rows(store.all(sql, values))
+        more = len(data) > limit
+        data = data[:limit]
+        wanted = {f.strip() for f in fields.split(",")} if fields else None
         for item in data:
             item["components"] = json.loads(item.pop("components_json"))
             item.pop("waba_id", None)
             item.pop("created_at", None)
             item.pop("updated_at", None)
-        return {"data": data}
+            if wanted:
+                for key in [k for k in item if k not in wanted | {"id"}]:
+                    item.pop(key)
+        body: dict[str, Any] = {"data": data}
+        if data:
+            body["paging"] = {"cursors": {"before": _encode_cursor(offset), "after": _encode_cursor(offset + len(data))}}
+            if more:
+                query = dict(request.query_params)
+                query["after"] = _encode_cursor(offset + len(data))
+                body["paging"]["next"] = str(request.url.replace_query_params(**query))
+        return body
 
     @app.post("/{version}/{waba_id}/message_templates")
     def create_template(version: str, waba_id: str, body: dict[str, Any] = Body(...)):
@@ -1282,8 +1331,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             store.execute("INSERT INTO templates VALUES(?,?,?,?,?,?,?,?,?)", (template_id, waba_id, body["name"], body["language"], body["category"].upper(), status, json.dumps(body["components"]), now, now))
         except Exception:
-            return graph_error(100, "A template with this name and language already exists.")
-        return {"id": template_id, "status": status, "category": body["category"].upper()}
+            language = LANGUAGE_NAMES.get(body["language"], body["language"])
+            return graph_error(
+                100,
+                f"There is already {language} content for this template. You can create a new template and try again.",
+                error_subcode=2388024,
+                user_title="Content in this language already exists",
+            )
+        result: dict[str, Any] = {"id": template_id, "status": status, "category": body["category"].upper()}
+        if warnings := template_warnings(body):
+            result["_sandbox_warnings"] = warnings
+        return result
 
     @app.delete("/{version}/{waba_id}/message_templates")
     def delete_template_by_name(version: str, waba_id: str, name: str = Query(...)):
