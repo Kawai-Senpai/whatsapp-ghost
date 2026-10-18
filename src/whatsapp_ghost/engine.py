@@ -7,7 +7,7 @@ import json
 import secrets
 import re
 import uuid
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -123,11 +123,86 @@ class Engine:
     async def start_delivery(self) -> None:
         self.http = httpx.AsyncClient(timeout=10)
         self.delivery_slots = asyncio.Semaphore(8)
+        self.resume_interrupted_deliveries()
+        self.retry_task = asyncio.create_task(self._retry_loop())
 
     async def stop_delivery(self) -> None:
+        task, self.retry_task = getattr(self, "retry_task", None), None
+        if task:
+            task.cancel()
         client, self.http, self.delivery_slots = self.http, None, None
         if client:
             await client.aclose()
+
+    # Meta retries a failed webhook with backoff; Ghost used to try once, so a
+    # receiver blip (or Ghost itself running out of file descriptors) lost the
+    # customer's message for good. Transient failures are retried on this
+    # schedule, then left failed for a manual replay.
+    RETRY_BACKOFF = (timedelta(seconds=15), timedelta(minutes=1), timedelta(minutes=5), timedelta(minutes=30))
+    RETRY_WINDOW = timedelta(hours=24)
+    #: Per 10 s tick: 90 a minute, under the 200/minute limit be-nf puts on
+    #: its webhook, so retries can never turn into a flood of their own.
+    RETRY_BATCH = 15
+
+    @staticmethod
+    def _real_now() -> datetime:
+        # Wall clock, not the sandbox clock: a frozen sandbox must still retry.
+        return datetime.now(timezone.utc)
+
+    def _schedule_retry(self, delivery_id: str, attempts: int) -> None:
+        if attempts > len(self.RETRY_BACKOFF):
+            return
+        due = self._real_now() + self.RETRY_BACKOFF[attempts - 1]
+        self.store.execute("UPDATE webhook_deliveries SET next_attempt_at=? WHERE id=?", (due.isoformat(), delivery_id))
+
+    def resume_interrupted_deliveries(self) -> int:
+        """Reschedule customer messages a previous process left in flight or lost to a transient error.
+
+        Only deliveries that carry an inbound message: a backlog of stale status
+        receipts (dev had ~22,000 after the descriptor leak) is not worth
+        replaying into the business, but a customer's reply or photo is.
+        """
+        since = (self._real_now() - self.RETRY_WINDOW).isoformat()
+        now = self._real_now().isoformat()
+        with self.store.connect() as db:
+            cursor = db.execute(
+                "UPDATE webhook_deliveries SET next_attempt_at=? "
+                "WHERE destination_url IS NOT NULL AND message_id IS NOT NULL AND next_attempt_at IS NULL AND created_at>=? "
+                "AND attempt_count<=? AND (status='pending' OR (status='failed' "
+                "AND (last_status_code IS NULL OR last_status_code>=500 OR last_status_code=429)))",
+                (now, since, len(self.RETRY_BACKOFF)),
+            )
+            # Nothing is in flight yet at startup, so any other "pending" row
+            # belonged to a dead process and would otherwise show forever.
+            db.execute(
+                "UPDATE webhook_deliveries SET status='failed', "
+                "last_error='Interrupted: Ghost restarted before this was sent' "
+                "WHERE status='pending' AND next_attempt_at IS NULL"
+            )
+            return cursor.rowcount
+
+    async def retry_due_deliveries(self) -> int:
+        now = self._real_now().isoformat()
+        due = [row["id"] for row in self.store.all(
+            "SELECT id FROM webhook_deliveries WHERE next_attempt_at IS NOT NULL AND next_attempt_at<=? "
+            "AND status IN ('failed','pending') ORDER BY next_attempt_at LIMIT ?",
+            (now, self.RETRY_BATCH),
+        )]
+        for delivery_id in due:
+            # Claimed before sending so a slow attempt is not picked up twice.
+            self.store.execute("UPDATE webhook_deliveries SET next_attempt_at=NULL WHERE id=?", (delivery_id,))
+        await asyncio.gather(*(self.deliver_webhook(delivery_id) for delivery_id in due), return_exceptions=True)
+        return len(due)
+
+    async def _retry_loop(self) -> None:
+        while True:
+            await asyncio.sleep(10)
+            try:
+                await self.retry_due_deliveries()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                pass
 
     async def _post_webhook(self, url: str, body: bytes, signature: str) -> httpx.Response:
         headers = {"Content-Type": "application/json", "X-Hub-Signature-256": signature}
@@ -432,6 +507,8 @@ class Engine:
             status ="delivered" if 200 <= response.status_code < 300 else "failed"
             completed_at = self.store.now().isoformat()
             self.store.execute("UPDATE webhook_deliveries SET status=?,attempt_count=?,last_status_code=?,last_response_body=?,last_error=?,delivered_at=? WHERE id=?", (status, attempts, response.status_code, response.content, None if status == "delivered" else response.text[:1000], completed_at if status == "delivered" else None, delivery_id))
+            if status == "failed" and (response.status_code >= 500 or response.status_code == 429):
+                self._schedule_retry(delivery_id, attempts)
             self.store.execute(
                 "UPDATE webhook_attempts SET completed_at=?,status_code=?,response_body=? WHERE id=?",
                 (completed_at, response.status_code, response.content, attempt_id),
@@ -446,6 +523,7 @@ class Engine:
             detail = str(exc).strip()
             error = f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
             self.store.execute("UPDATE webhook_deliveries SET status='failed',attempt_count=?,last_error=? WHERE id=?", (attempts, error, delivery_id))
+            self._schedule_retry(delivery_id, attempts)
             self.store.execute(
                 "UPDATE webhook_attempts SET completed_at=?,error=? WHERE id=?",
                 (self.store.now().isoformat(), error, attempt_id),

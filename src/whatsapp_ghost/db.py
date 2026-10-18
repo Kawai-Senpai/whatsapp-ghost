@@ -69,7 +69,7 @@ CREATE TABLE IF NOT EXISTS webhook_deliveries (
   request_body BLOB NOT NULL, signature TEXT NOT NULL, status TEXT NOT NULL,
   attempt_count INTEGER NOT NULL DEFAULT 0, last_status_code INTEGER,
   last_response_body BLOB, last_error TEXT, created_at TEXT NOT NULL, delivered_at TEXT,
-  message_id TEXT
+  message_id TEXT, next_attempt_at TEXT
 );
 CREATE TABLE IF NOT EXISTS webhook_attempts (
   id TEXT PRIMARY KEY, delivery_id TEXT NOT NULL, attempt_number INTEGER NOT NULL,
@@ -279,6 +279,11 @@ class Store:
             if column not in user_columns:
                 db.execute(f"ALTER TABLE simulated_users ADD COLUMN {column} {ddl}")
                 added = True
+        delivery_columns = {row[1] for row in db.execute("PRAGMA table_info(webhook_deliveries)")}
+        if "next_attempt_at" not in delivery_columns:
+            # When a transient failure is retried; NULL means nothing scheduled.
+            db.execute("ALTER TABLE webhook_deliveries ADD COLUMN next_attempt_at TEXT")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_deliveries_retry ON webhook_deliveries(next_attempt_at)")
         db.executescript(COUNTER_TRIGGERS)
         db.executescript(USER_TRIGGERS)
         db.execute("CREATE INDEX IF NOT EXISTS idx_conversations_activity ON conversations(last_message_at DESC)")
